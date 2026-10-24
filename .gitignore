@@ -1,0 +1,30 @@
+node_modules/
+dist/
+data/
+test-results/
+playwright-report/
+tests/.tmp/
+
+# Local secrets, database copies and machine-specific files
+.env
+.env.*
+!.env.example
+*.sqlite
+*.sqlite-*
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.pem
+*.key
+*.log
+.aws/
+.codex/
+.agents/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# One-off QR used for the local phone trial
+public/table-2-trial-qr.png
