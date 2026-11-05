@@ -1,5 +1,6 @@
-import { DollarSign, ShoppingCart, Users, TrendingUp } from 'lucide-react';
+import { ShoppingCart, Users, TrendingUp } from 'lucide-react';
 import StatCard from '../../components/StatCard';
+import PesoSign from '../../components/PesoSign';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { salesSummary } from '../../lib/sales';
 import { format } from 'date-fns';
@@ -25,7 +26,7 @@ export default function OwnerDashboard() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
-        <StatCard title="Weekly Revenue" value={`₱${totalRevenue.toLocaleString()}`} icon={DollarSign} color="gold" />
+        <StatCard title="Weekly Revenue" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoSign} color="gold" />
         <StatCard title="Avg. Daily Sales" value={`₱${dailyAvg.toLocaleString()}`} icon={TrendingUp} color="blue" />
         <StatCard title="Active Tables" value={`${activeTables}/${totalTables}`} icon={Users} color="green" />
         <StatCard title="Total Orders" value={totalOrders} icon={ShoppingCart} color="red" />

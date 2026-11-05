@@ -11,13 +11,17 @@ import { formatStock } from '../lib/inventory';
 
 type Tab = 'inventory' | 'archive' | 'log';
 
-export default function Inventory({ canManage = false }: { canManage?: boolean }) {
-  const { inventory, inventoryMovements, updateInventory, archiveInventoryItem, getLowStockItems, getOutOfStockItems } = useRestaurant();
+export default function Inventory({ canManage = false, canManagePricing = false }: { canManage?: boolean; canManagePricing?: boolean }) {
+  const { inventory, inventoryMovements, updateInventory, restockInventory, archiveInventoryItem, getLowStockItems, getOutOfStockItems } = useRestaurant();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'low' | 'out'>('all');
   const [editingItem, setEditingItem] = useState<string | null>(null);
   const [editValue, setEditValue] = useState('');
   const [saving, setSaving] = useState(false);
+  const [restockingItem, setRestockingItem] = useState<string | null>(null);
+  const [restockQuantity, setRestockQuantity] = useState('');
+  const [restockReason, setRestockReason] = useState('');
+  const [restocking, setRestocking] = useState(false);
   const [tab, setTab] = useState<Tab>('inventory');
 
   const activeInventory   = inventory.filter((i) => !i.archived);
@@ -78,6 +82,23 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
     } finally { setSaving(false); }
   };
 
+  const handleRestock = async (itemId: string) => {
+    const quantity = Number(restockQuantity);
+    if (!restockQuantity.trim() || !Number.isFinite(quantity) || quantity <= 0 || !restockReason.trim()) {
+      toast.error('Enter a restock quantity greater than zero and a reason.');
+      return;
+    }
+    setRestocking(true);
+    try {
+      if (await restockInventory(itemId, quantity, restockReason.trim())) {
+        setRestockingItem(null);
+        setRestockQuantity('');
+        setRestockReason('');
+        toast.success('Stock restocked and recorded in the movement log.');
+      }
+    } finally { setRestocking(false); }
+  };
+
   const handleArchive = (itemId: string) => {
     archiveInventoryItem(itemId, true);
     setEditingItem(null);
@@ -105,7 +126,8 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
       </div>
 
       {/* Low-stock alert banner */}
-      {canManage && <><OwnerPricingSettings /><AddProductForm /></>}
+      {canManagePricing && <OwnerPricingSettings />}
+      {canManage && <AddProductForm />}
       {(lowStockItems.length > 0 || outOfStockItems.length > 0) && (
         <div className="mb-6 rounded-xl border border-red-600/30 bg-red-950/25 p-4 space-y-2">
           <div className="flex items-center gap-2 mb-3">
@@ -237,9 +259,23 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
                             className="w-24 rounded border border-amber-600/50 bg-[#1A1210] px-2 py-1 text-amber-100 focus:border-amber-500 focus:outline-none"
                           />
                         ) : (
-                          <span className={`font-semibold ${status === 'out' ? 'text-red-400' : status === 'low' ? 'text-amber-400' : 'text-amber-200'}`}>
-                            {formatStock(item.currentStock, item.unit)}
-                          </span>
+                          <div>
+                            <span className={`font-semibold ${status === 'out' ? 'text-red-400' : status === 'low' ? 'text-amber-400' : 'text-amber-200'}`}>
+                              {formatStock(item.currentStock, item.unit)}
+                            </span>
+                            <details className="mt-1 text-xs text-amber-500/60">
+                              <summary className="cursor-pointer hover:text-amber-300">FIFO lots ({item.stockLots?.length || 0})</summary>
+                              <div className="mt-2 min-w-56 space-y-2">
+                                {item.stockLots?.length ? item.stockLots.map(lot => (
+                                  <div key={lot.id} className="border-l border-amber-700/50 pl-2">
+                                    <p className="text-amber-300">{formatStock(lot.remainingQuantity, item.unit)} remaining · {lot.source}</p>
+                                    <p>Received {format(new Date(lot.receivedAt), 'MMM d, yyyy h:mm a')}</p>
+                                    <p>{lot.reason}{lot.actorName ? ` · ${lot.actorName}` : ''}</p>
+                                  </div>
+                                )) : <p>No stock lots recorded.</p>}
+                              </div>
+                            </details>
+                          </div>
                         )}
                       </td>
                       <td className="px-6 py-4 text-amber-400/70">{item.unit}</td>
@@ -266,6 +302,31 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
                           >
                             <Edit className="h-3 w-3" /> Edit
                           </button>
+                        )}
+                        {editingItem !== item.id && (
+                          <button
+                            type="button"
+                            onClick={() => { setRestockingItem(restockingItem === item.id ? null : item.id); setRestockQuantity(''); setRestockReason(''); }}
+                            className="mt-2 flex items-center gap-1 rounded border border-green-700/50 bg-green-950/30 px-3 py-1 text-xs font-medium text-green-300 hover:bg-green-900/40"
+                          >
+                            <TrendingUp className="h-3 w-3" /> Restock
+                          </button>
+                        )}
+                        {restockingItem === item.id && (
+                          <div className="mt-2 min-w-48 space-y-2 rounded border border-green-700/40 bg-[#1A1210] p-2">
+                            <label className="block text-xs text-amber-300">
+                              Quantity ({item.unit})
+                              <input aria-label={`Restock quantity for ${item.name}`} type="number" min="0.0001" max="100000000" step="0.0001" value={restockQuantity} onChange={event => setRestockQuantity(event.target.value)} disabled={restocking} className="mt-1 w-full rounded border border-amber-600/40 bg-[#252018] px-2 py-1 text-amber-100" />
+                            </label>
+                            <label className="block text-xs text-amber-300">
+                              Reason
+                              <input aria-label={`Restock reason for ${item.name}`} type="text" maxLength={300} value={restockReason} onChange={event => setRestockReason(event.target.value)} disabled={restocking} className="mt-1 w-full rounded border border-amber-600/40 bg-[#252018] px-2 py-1 text-amber-100" />
+                            </label>
+                            <div className="flex gap-2">
+                              <button type="button" disabled={restocking} onClick={() => handleRestock(item.id)} className="rounded bg-green-700 px-2 py-1 text-xs font-medium text-white disabled:opacity-50">{restocking ? 'Saving…' : 'Save restock'}</button>
+                              <button type="button" disabled={restocking} onClick={() => setRestockingItem(null)} className="rounded border border-amber-600/30 px-2 py-1 text-xs text-amber-300">Cancel</button>
+                            </div>
+                          </div>
                         )}
                         <InventoryMenuVisibility item={item} />
                       </td>}
@@ -354,6 +415,9 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
                     <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Type</th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Quantity</th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Reason</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">FIFO lot(s)</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Stock after</th>
+                    <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Recorded by</th>
                     <th className="px-6 py-3 text-left text-xs font-semibold text-amber-400/70">Table</th>
                   </tr>
                 </thead>
@@ -382,6 +446,15 @@ export default function Inventory({ canManage = false }: { canManage?: boolean }
                         </span>
                       </td>
                       <td className="px-6 py-3 text-xs text-amber-500/60 max-w-xs truncate">{mov.reason}</td>
+                      <td className="px-6 py-3 text-xs text-amber-400/70">
+                        {mov.lots?.length ? mov.lots.map((lot, index) => (
+                          <span key={`${lot.lotId}-${index}`} className="block">
+                            {formatStock(lot.quantity, mov.unit)} · {lot.receivedAt ? format(new Date(lot.receivedAt), 'MMM d, yyyy') : lot.lotId}
+                          </span>
+                        )) : mov.lotReceivedAt ? format(new Date(mov.lotReceivedAt), 'MMM d, yyyy') : '—'}
+                      </td>
+                      <td className="px-6 py-3 text-sm text-amber-200">{mov.afterStock === undefined ? '—' : formatStock(mov.afterStock, mov.unit)}</td>
+                      <td className="px-6 py-3 text-sm text-amber-400/70">{mov.actorName || 'System'}</td>
                       <td className="px-6 py-3 text-sm text-amber-400/70">
                         {mov.tableNumber ? `Table ${mov.tableNumber}` : <span className="text-amber-600/30">—</span>}
                       </td>

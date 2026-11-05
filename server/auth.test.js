@@ -52,14 +52,15 @@ test('staff accounts and permissions', async t => {
       assert.equal(db.prepare('SELECT password_hash FROM staff_users WHERE username=?').get('owner').password_hash, before);
     });
     let visit;
-    await t.test('cashier manages tables while only the owner can edit stock', async () => {
+    await t.test('cashier manages tables and shared inventory while pricing remains owner-only', async () => {
       const body = { tableNumber: 1, customerName: 'Auth Guest', regularPax: 2, discountedPax: 0 };
       assert.equal((await call('/dining/open', body, kitchen.cookie)).status, 403);
       visit = (await call('/dining/open', body, cashier.cookie)).body;
       for (const path of [`/dining/visits/${visit.id}/pay`, `/dining/visits/${visit.id}/reopen`, `/dining/staff/visits/${visit.id}/request-bill`]) assert.equal((await call(path, {}, kitchen.cookie)).status, 403);
       assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, kitchen.cookie, 'PATCH')).status, 403);
-      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, cashier.cookie, 'PATCH')).status, 403);
-      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, owner.cookie, 'PATCH')).status, 200);
+      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, cashier.cookie, 'PATCH')).status, 200);
+      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 41 }, owner.cookie, 'PATCH')).status, 200);
+      assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, cashier.cookie, 'PATCH')).status, 403);
     });
     await t.test('state redacts customer credentials and kitchen financial records', async () => {
       const state = (await call('/dining/state', undefined, cashier.cookie)).body; assert.equal(state.sessions[0].tokens, undefined); assert.equal(state.sessions[0].code, visit.code);

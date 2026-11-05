@@ -1,7 +1,8 @@
 import { salesSummary } from '../../lib/sales';
 import { useEffect } from 'react';
-import { ShoppingCart, Users, DollarSign, AlertTriangle } from 'lucide-react';
+import { ShoppingCart, Users, AlertTriangle } from 'lucide-react';
 import StatCard from '../../components/StatCard';
+import PesoSign from '../../components/PesoSign';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { toast } from 'sonner';
 
@@ -55,7 +56,7 @@ export default function Dashboard() {
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
         <StatCard title="Total Orders" value={totalOrders} icon={ShoppingCart} color="gold" />
         <StatCard title="Active Tables" value={`${activeTables}/${totalTables}`} icon={Users} color="blue" />
-        <StatCard title="Daily Sales" value={`₱${dailySales.toLocaleString()}`} icon={DollarSign} color="green" />
+        <StatCard title="Daily Sales" value={`₱${dailySales.toLocaleString()}`} icon={PesoSign} color="green" />
         <StatCard title="Low Stock Alerts" value={lowStockCount} icon={AlertTriangle} color="red" />
       </div>
 

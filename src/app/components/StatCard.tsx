@@ -1,9 +1,9 @@
-import { LucideIcon } from 'lucide-react';
+import type { ComponentType } from 'react';
 
 interface StatCardProps {
   title: string;
   value: string | number;
-  icon: LucideIcon;
+  icon: ComponentType<{ className?: string }>;
   trend?: string;
   trendUp?: boolean;
   color?: 'red' | 'gold' | 'green' | 'blue';
@@ -30,7 +30,7 @@ export default function StatCard({ title, value, icon: Icon, trend, trendUp, col
           )}
         </div>
         <div className={`rounded-lg ${iconColorClasses[color]} p-3 shadow-md`}>
-          <Icon className="h-8 w-8" />
+          <Icon className="h-8 w-8 text-3xl" />
         </div>
       </div>
     </div>

@@ -4,7 +4,7 @@ import { api } from '../lib/api';
 import { fileToDataUrl } from '../lib/imageUpload';
 import type { Order, InventoryItem, Table, Transaction, InventoryMovement, MenuItem } from '../data/restaurantData';
 
-export interface DiningSession { id: string; tableNumber: number; customerName?: string; regularPax: number; discountedPax: number; regularGuestPrice?: number; discountedGuestPrice?: number; packageTotal: number; code: string; status: string; initialBatchApproved: boolean; additionalTotal: number; grossTotal: number; discountAmount: number; discountReason: string; total: number; canClose: boolean; blockers: {id: string; batchNumber: number; status: string}[]; }
+export interface DiningSession { id: string; tableNumber: number; customerName?: string; regularPax: number; discountedPax: number; regularGuestPrice?: number; discountedGuestPrice?: number; packageTotal: number; leftoverFee?: { amount: number; description: string; customerInformed: boolean; approvedAt: string; approvedByName: string } | null; initialBatchApproved: boolean; additionalTotal: number; leftoverFeeAmount: number; grossTotal: number; discountAmount: number; discountReason: string; total: number; canClose: boolean; blockers: {id: string; batchNumber: number; status: string}[]; }
 export interface GuestPricing { regularGuestPrice: number; discountedGuestPrice: number; }
 export interface NewProduct { name: string; category: string; price: number; description: string; unit: string; currentStock: number; lowStockThreshold: number; stockPerOrder: number; hiddenFromMenu: boolean; }
 interface State { orders: (Order & {sessionId: string})[]; inventory: InventoryItem[]; menu: MenuItem[]; pricing: GuestPricing; tables: Table[]; transactions: Transaction[]; inventoryMovements: InventoryMovement[]; sessions: DiningSession[]; }
@@ -22,6 +22,7 @@ function useStore() {
     addProduct: async (product: NewProduct, image?: File) => { try { const imageData = image ? await fileToDataUrl(image) : undefined; await api('/dining/inventory', { ...product, ...(imageData ? { imageData } : {}) }); await refresh(); return true; } catch (e) { toast.error((e as Error).message); return false; } },
     updateOrderStatus: (id: string, status: Order['status']) => change(`/dining/orders/${id}`, { status }),
     updateInventory: (id: string, currentStock: number) => change(`/dining/inventory/${id}`, { currentStock }),
+    restockInventory: (id: string, quantity: number, reason: string) => change(`/dining/inventory/${id}/restock`, { quantity, reason }, 'POST'),
     uploadInventoryImage: async (id: string, image: File) => { try { const imageData = await fileToDataUrl(image); return await change(`/dining/inventory/${id}/image`, { imageData }, 'PUT'); } catch (e) { toast.error((e as Error).message); return false; } },
     updateGuestPricing: (pricing: GuestPricing) => change('/dining/pricing', pricing),
     updateMenuPricing: (id: string, values: { price: number; priceMinimum: number; priceMaximum: number }) => change(`/dining/menu/${id}/pricing`, values),

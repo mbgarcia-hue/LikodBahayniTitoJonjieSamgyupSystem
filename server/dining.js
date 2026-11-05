@@ -12,6 +12,7 @@ const seed = JSON.parse(readFileSync(new URL('./seed.json', import.meta.url), 'u
 const menuImageDirectory = resolve(process.env.MENU_IMAGE_DIR || fileURLToPath(new URL('../data/menu-images', import.meta.url)));
 const defaultPricing = { regularGuestPrice: 220, discountedGuestPrice: 195 };
 const maxMenuPrice = 1000000;
+const leftoverFeeAmount = 300;
 const fail = (message, status = 400) => { const e = new Error(message); e.status = status; throw e; };
 function pricingFor(state) {
   return { ...defaultPricing, ...state.pricing };
@@ -36,6 +37,53 @@ function textField(value, label, maxLength) {
 function stockNumber(value, label, minimum = 0) {
   if (!Number.isFinite(value) || value < minimum || value > 100000000 || Math.abs(value * 10000 - Math.round(value * 10000)) > 0.00001) fail(`${label} must be between ${minimum} and 100000000 with at most four decimal places`);
   return value;
+}
+function roundedStock(value) {
+  return Number(value.toFixed(4));
+}
+function stockLotsFor(item) {
+  return [...(item.stockLots || [])].sort((a, b) => {
+    const timeDifference = Date.parse(a.receivedAt) - Date.parse(b.receivedAt);
+    const timeOrder = Number.isNaN(timeDifference) ? 0 : timeDifference;
+    return timeOrder || (a.sequence ?? 0) - (b.sequence ?? 0) || a.id.localeCompare(b.id);
+  });
+}
+function planStockConsumption(item, amount) {
+  let remaining = amount;
+  const allocations = [];
+  for (const lot of stockLotsFor(item)) {
+    if (lot.remainingQuantity <= 0) continue;
+    const quantity = roundedStock(Math.min(lot.remainingQuantity, remaining));
+    if (!quantity) continue;
+    allocations.push({ lotId: lot.id, quantity, receivedAt: lot.receivedAt });
+    remaining = roundedStock(remaining - quantity);
+    if (remaining <= 0.00001) break;
+  }
+  if (remaining > 0.00001) fail(`Insufficient stock lots: ${item.name}`, 409);
+  return allocations;
+}
+function consumeStockLots(item, allocations) {
+  for (const allocation of allocations) {
+    const lot = item.stockLots.find(candidate => candidate.id === allocation.lotId) || fail(`Inventory lot is missing: ${item.name}`, 409);
+    if (lot.remainingQuantity + 0.00001 < allocation.quantity) fail(`Inventory lot changed: ${item.name}`, 409);
+    lot.remainingQuantity = roundedStock(lot.remainingQuantity - allocation.quantity);
+  }
+  item.currentStock = roundedStock(item.stockLots.reduce((total, lot) => total + lot.remainingQuantity, 0));
+}
+function restoreStockLots(item, allocations) {
+  for (const allocation of allocations) {
+    const lot = item.stockLots.find(candidate => candidate.id === allocation.lotId) || fail(`Reserved inventory lot is missing: ${item.name}`, 409);
+    lot.remainingQuantity = stockNumber(roundedStock(lot.remainingQuantity + allocation.quantity), 'Restored stock');
+  }
+  item.currentStock = stockNumber(roundedStock(item.stockLots.reduce((total, lot) => total + lot.remainingQuantity, 0)), 'Updated stock');
+}
+function addStockLot(item, quantity, timestamp, details) {
+  item.stockLots ??= [];
+  const sequence = item.stockLots.reduce((maximum, existing) => Math.max(maximum, existing.sequence ?? 0), -1) + 1;
+  const lot = { id: randomUUID(), quantity, remainingQuantity: quantity, receivedAt: timestamp, sequence, ...details };
+  item.stockLots.push(lot);
+  item.currentStock = stockNumber(roundedStock(item.currentStock + quantity), 'Updated stock');
+  return lot;
 }
 async function storeMenuImage(dataUrl) {
   const match = typeof dataUrl === 'string' && dataUrl.length <= 4_200_000
@@ -105,6 +153,35 @@ database.transaction(() => {
     const initial = initialApprovalFor(state, visit.id);
     if (initial && routeFollowUps(state, visit.id, initial)) changed = true;
   }
+  const pendingReservations = new Map();
+  for (const order of state.orders.filter(o => o.status === 'submitted' && o.reservedStock && !o.reservedStockLots)) {
+    for (const [itemId, quantity] of Object.entries(order.reservedStock)) {
+      pendingReservations.set(itemId, (pendingReservations.get(itemId) || 0) + quantity);
+    }
+  }
+  const migrationTime = new Date().toISOString();
+  for (const item of state.inventory) {
+    if (Array.isArray(item.stockLots)) continue;
+    const reservedQuantity = pendingReservations.get(item.id) || 0;
+    const lot = {
+      id: `opening-${item.id}`,
+      quantity: roundedStock(item.currentStock + reservedQuantity),
+      remainingQuantity: item.currentStock,
+      receivedAt: migrationTime,
+      sequence: 0,
+      source: 'opening',
+      reason: 'Opening stock carried into FIFO tracking',
+    };
+    item.stockLots = lot.quantity > 0 ? [lot] : [];
+    changed = true;
+  }
+  for (const order of state.orders.filter(o => o.status === 'submitted' && o.reservedStock && !o.reservedStockLots)) {
+    order.reservedStockLots = Object.fromEntries(Object.entries(order.reservedStock).map(([itemId, quantity]) => [
+      itemId,
+      [{ lotId: `opening-${itemId}`, quantity, receivedAt: migrationTime }],
+    ]));
+    changed = true;
+  }
   if (changed) database.prepare('UPDATE dining_state SET body=? WHERE id=1').run(JSON.stringify(state));
 })();
 function audit(req, visitId, type, details = {}, orderId = null) {
@@ -135,7 +212,7 @@ function customer(req, state) {
 }
 function view(state, s) {
   const orders = state.orders.filter(o => o.sessionId === s.id);
-  return { session: { id: s.id, tableNumber: s.tableNumber, customerName: s.customerName, status: s.status, regularPax: s.regularPax, discountedPax: s.discountedPax, regularGuestPrice: s.regularGuestPrice ?? defaultPricing.regularGuestPrice, discountedGuestPrice: s.discountedGuestPrice ?? defaultPricing.discountedGuestPrice, packageTotal: s.packageTotal, initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) },
+  return { session: { id: s.id, tableNumber: s.tableNumber, customerName: s.customerName, status: s.status, regularPax: s.regularPax, discountedPax: s.discountedPax, regularGuestPrice: s.regularGuestPrice ?? defaultPricing.regularGuestPrice, discountedGuestPrice: s.discountedGuestPrice ?? defaultPricing.discountedGuestPrice, packageTotal: s.packageTotal, leftoverFee: s.leftoverFee || null, initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) },
     orders: orders.map(({ reservedStock, requestId, ...o }) => o), ...billFor(state, s), menu: state.menu.filter(m => visibleOnMenu(state, m)).map(m => {
       const rule = stockRule(m); const inv = rule && state.inventory.find(i => i.id === rule.inventoryId);
       return { ...m, priceMinimum: m.priceMinimum ?? 0, priceMaximum: m.priceMaximum ?? maxMenuPrice, available: m.available && (!rule || (inv && !inv.archived && inv.currentStock >= rule.amount)) };
@@ -144,7 +221,7 @@ function view(state, s) {
 export function installDining(app) {
   installAuth(app);
   const managers = roles('cashier', 'owner');
-  const inventoryManagers = roles('owner');
+  const inventoryManagers = roles('cashier', 'owner');
   app.use('/api/dining', (req, res, next) => {
     if (['POST', 'PATCH'].includes(req.method) && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return res.status(400).json({ error: 'Provide a JSON object' });
     next();
@@ -257,10 +334,15 @@ export function installDining(app) {
       const inv = state.inventory.find(i => i.id === id && !i.archived);
       if (!inv || inv.currentStock + 0.00001 < amount) fail(`Insufficient stock: ${inv?.name || id}`, 409);
     }
-    const order = { id: randomUUID(), requestId, sessionId: s.id, tableNumber: s.tableNumber, batchNumber: state.orders.filter(o => o.sessionId === s.id).length + 1, items: normalized, status: 'submitted', timeOrdered: new Date().toISOString(), totalAmount: Number(normalized.reduce((n, i) => n + i.price * i.quantity, 0).toFixed(2)), customerNotes: notes, reservedStock: demand, history: [] };
+    const allocations = Object.fromEntries(Object.entries(demand).map(([id, amount]) => {
+      const inv = state.inventory.find(i => i.id === id);
+      return [id, planStockConsumption(inv, amount)];
+    }));
+    const order = { id: randomUUID(), requestId, sessionId: s.id, tableNumber: s.tableNumber, batchNumber: state.orders.filter(o => o.sessionId === s.id).length + 1, items: normalized, status: 'submitted', timeOrdered: new Date().toISOString(), totalAmount: Number(normalized.reduce((n, i) => n + i.price * i.quantity, 0).toFixed(2)), customerNotes: notes, reservedStock: demand, reservedStockLots: allocations, history: [] };
     for (const [id, amount] of Object.entries(demand)) {
-      const inv = state.inventory.find(i => i.id === id); inv.currentStock = Number((inv.currentStock - amount).toFixed(4)); inv.lastUpdated = order.timeOrdered;
-      state.inventoryMovements.unshift({ id: randomUUID(), itemId: id, itemName: inv.name, type: 'deduction', quantity: amount, unit: inv.unit, reason: 'Reserved for submitted batch', orderId: order.id, tableNumber: s.tableNumber, timestamp: order.timeOrdered });
+      const inv = state.inventory.find(i => i.id === id);
+      consumeStockLots(inv, allocations[id]); inv.lastUpdated = order.timeOrdered;
+      state.inventoryMovements.unshift({ id: randomUUID(), itemId: id, itemName: inv.name, type: 'deduction', quantity: amount, unit: inv.unit, reason: 'Reserved for submitted batch (FIFO)', lots: allocations[id], orderId: order.id, tableNumber: s.tableNumber, timestamp: order.timeOrdered });
     }
     state.orders.push(order); recordStatus(req, order, 'submitted', { items: normalized, totalAmount: order.totalAmount, notes });
     const initial = initialApprovalFor(state, s.id);
@@ -280,6 +362,19 @@ export function installDining(app) {
     if (s.status !== 'pending_payment') audit(req, s.id, 'bill_requested');
     s.status = 'pending_payment'; state.tables.find(t => t.id === s.tableNumber).status = 'pending_payment'; return s;
   })));
+  app.post('/api/dining/visits/:id/leftover-fee', roles('cashier'), (req, res) => res.json(mutate(state => {
+    const visit = session(state, req.params.id);
+    if (visit.status === 'closed') fail('This visit is closed', 409);
+    if (visit.status !== 'pending_payment') fail('Request the bill before approving a leftover fee', 409);
+    if (billFor(state, visit).blockers.length) fail('All batches must be served or cancelled before approving a leftover fee', 409);
+    if (visit.leftoverFee) fail('The leftover fee has already been approved for this visit', 409);
+    if (Object.keys(req.body).length !== 2 || !Object.hasOwn(req.body, 'leftoverDescription') || req.body.customerInformed !== true) fail('Confirm the customer was informed and provide leftover details.');
+    const description = textField(req.body.leftoverDescription, 'leftover details', 300);
+    const fee = { amount: leftoverFeeAmount, description, customerInformed: true, approvedAt: new Date().toISOString(), approvedBy: req.staff.id, approvedByName: req.staff.username };
+    visit.leftoverFee = fee;
+    audit(req, visit.id, 'leftover_fee_approved', fee);
+    return { ...fee, ...billFor(state, visit) };
+  })));
   app.post('/api/dining/visits/:id/pay', managers, (req, res) => res.json(mutate(state => {
     const s = session(state, req.params.id); if (s.status === 'closed') return state.transactions.find(t => t.sessionId === s.id);
     if (!s.customerName) fail('The customer must join and enter a billing name before payment can be recorded.', 409);
@@ -291,7 +386,7 @@ export function installDining(app) {
     if (!['cash', 'online'].includes(paymentMethod)) fail('Select a payment method');
     if (paymentMethod === 'cash' && (!Number.isFinite(amountReceived) || amountReceived < total || Math.abs(Math.round(amountReceived * 100) - amountReceived * 100) > 0.000001)) fail('Enter a valid cash amount at least equal to the bill');
     if (paymentMethod === 'online' && (typeof reference !== 'string' || reference.trim().length < 5 || reference.length > 200)) fail('Enter a verified payment reference (5–200 characters)');
-    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, customerName: s.customerName || '', totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.username, timestamp: new Date().toISOString() };
+    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, customerName: s.customerName || '', totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, leftoverFee: s.leftoverFee || null, leftoverFeeAmount: bill.leftoverFeeAmount, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.username, timestamp: new Date().toISOString() };
     txn.change = Number(txn.change.toFixed(2));
     state.transactions.unshift(txn); s.status = 'closed'; s.closedAt = txn.timestamp;
     audit(req, s.id, 'payment_confirmed', txn); audit(req, s.id, 'session_closed', { transactionId: txn.id, total });
@@ -328,8 +423,15 @@ export function installDining(app) {
     const event = recordStatus(req, order, 'cancelled', { reason: reason.trim() }); order.cancellationReason = reason.trim();
     for (const [id, amount] of Object.entries(reserved)) {
       const inv = state.inventory.find(i => i.id === id) || fail('Reserved inventory is missing', 409);
-      inv.currentStock = Number((inv.currentStock + amount).toFixed(4)); inv.lastUpdated = event.timestamp;
-      state.inventoryMovements.unshift({ id: randomUUID(), itemId: id, itemName: inv.name, type: 'restock', quantity: amount, unit: inv.unit, reason: 'Released cancelled batch reservation', orderId: order.id, tableNumber: order.tableNumber, timestamp: event.timestamp });
+      let allocations = order.reservedStockLots?.[id];
+      if (!allocations) {
+        const lot = addStockLot(inv, amount, event.timestamp, { source: 'cancellation-recovery', reason: 'Legacy batch reservation restored', actorId: req.staff.id, actorName: req.staff.username });
+        allocations = [{ lotId: lot.id, quantity: amount }];
+      } else {
+        restoreStockLots(inv, allocations);
+      }
+      inv.lastUpdated = event.timestamp;
+      state.inventoryMovements.unshift({ id: randomUUID(), itemId: id, itemName: inv.name, type: 'restock', quantity: amount, unit: inv.unit, reason: 'Released cancelled batch reservation', lots: allocations, orderId: order.id, tableNumber: order.tableNumber, timestamp: event.timestamp, actorId: req.staff.id, actorName: req.staff.username });
     }
     if (billFor(state, visit).total < 0) fail('Reduce the session discount before cancelling this batch', 409);
     return order;
@@ -379,10 +481,11 @@ export function installDining(app) {
     const lowStockThreshold = stockNumber(req.body.lowStockThreshold, 'Low stock threshold');
     const stockPerOrder = stockNumber(req.body.stockPerOrder, 'Stock used per order', 0.0001);
     const now = new Date().toISOString();
-    const inventory = { id: `inv-${randomUUID()}`, name, currentStock, unit, lowStockThreshold, lastUpdated: now, hiddenFromMenu, ...(storedImage ? { image: storedImage.url } : {}), createdAt: now, createdBy: req.staff.id, createdByName: req.staff.username };
+    const openingLot = currentStock ? { id: randomUUID(), quantity: currentStock, remainingQuantity: currentStock, receivedAt: now, sequence: 0, source: 'opening', reason: 'Opening stock for new product', actorId: req.staff.id, actorName: req.staff.username } : null;
+    const inventory = { id: `inv-${randomUUID()}`, name, currentStock, unit, lowStockThreshold, lastUpdated: now, stockLots: openingLot ? [openingLot] : [], hiddenFromMenu, ...(storedImage ? { image: storedImage.url } : {}), createdAt: now, createdBy: req.staff.id, createdByName: req.staff.username };
     const menu = { id: `product-${randomUUID()}`, name, category, price, priceMinimum: 0, priceMaximum: maxMenuPrice, description: description.trim(), available: true, inventoryId: inventory.id, stockPerOrder, ...(storedImage ? { image: storedImage.url } : {}) };
     state.inventory.push(inventory); state.menu.push(menu);
-    if (currentStock) state.inventoryMovements.unshift({ id: randomUUID(), itemId: inventory.id, itemName: name, type: 'restock', quantity: currentStock, unit, reason: 'Opening stock for new product', timestamp: now, actorId: req.staff.id, actorName: req.staff.username });
+    if (openingLot) state.inventoryMovements.unshift({ id: randomUUID(), itemId: inventory.id, itemName: name, type: 'restock', quantity: currentStock, unit, reason: 'Opening stock for new product', lotId: openingLot.id, lotReceivedAt: openingLot.receivedAt, timestamp: now, actorId: req.staff.id, actorName: req.staff.username });
     return { inventory, menu };
       });
       res.status(201).json(result);
@@ -395,10 +498,17 @@ export function installDining(app) {
     const item = state.inventory.find(i => i.id === req.params.id) || fail('Item not found', 404);
     if (Object.keys(req.body).some(key => !['currentStock', 'archived', 'hiddenFromMenu'].includes(key))) fail('Unknown inventory field');
     if ('currentStock' in req.body) {
-      const stock = req.body.currentStock; if (!Number.isFinite(stock) || stock < 0) fail('Stock must be a nonnegative number');
+      const stock = stockNumber(req.body.currentStock, 'Stock');
       const diff = stock - item.currentStock;
-      if (diff) state.inventoryMovements.unshift({ id: randomUUID(), itemId: item.id, itemName: item.name, type: diff > 0 ? 'restock' : 'deduction', quantity: Math.abs(diff), unit: item.unit, reason: 'Staff stock adjustment', timestamp: new Date().toISOString(), actorId: req.staff.id, actorName: req.staff.username });
-      item.currentStock = stock;
+      const timestamp = new Date().toISOString();
+      if (diff > 0) {
+        const lot = addStockLot(item, diff, timestamp, { source: 'adjustment', reason: 'Staff stock adjustment', actorId: req.staff.id, actorName: req.staff.username });
+        state.inventoryMovements.unshift({ id: randomUUID(), itemId: item.id, itemName: item.name, type: 'restock', quantity: diff, unit: item.unit, reason: 'Staff stock adjustment', lotId: lot.id, lotReceivedAt: lot.receivedAt, timestamp, actorId: req.staff.id, actorName: req.staff.username });
+      } else if (diff < 0) {
+        const allocations = planStockConsumption(item, -diff);
+        consumeStockLots(item, allocations);
+        state.inventoryMovements.unshift({ id: randomUUID(), itemId: item.id, itemName: item.name, type: 'deduction', quantity: -diff, unit: item.unit, reason: 'Staff stock adjustment', lots: allocations, timestamp, actorId: req.staff.id, actorName: req.staff.username });
+      }
     }
     if ('archived' in req.body) { if (typeof req.body.archived !== 'boolean') fail('Invalid archive value'); item.archived = req.body.archived; item.archivedAt = item.archived ? new Date().toISOString() : null; }
     if ('hiddenFromMenu' in req.body) {
@@ -407,6 +517,23 @@ export function installDining(app) {
       item.visibilityUpdatedAt = new Date().toISOString(); item.visibilityUpdatedBy = req.staff.id;
     }
     item.lastUpdated = new Date().toISOString(); return item;
+  })));
+  app.post('/api/dining/inventory/:id/restock', inventoryManagers, (req, res) => res.json(mutate(state => {
+    const item = state.inventory.find(i => i.id === req.params.id) || fail('Item not found', 404);
+    if (Object.keys(req.body).some(key => !['quantity', 'reason'].includes(key))) fail('Unknown restock field');
+    const quantity = stockNumber(req.body.quantity, 'Restock quantity', 0.0001);
+    const reason = textField(req.body.reason, 'restock reason', 300);
+    const beforeStock = item.currentStock;
+    const timestamp = new Date().toISOString();
+    const lot = addStockLot(item, quantity, timestamp, { source: 'restock', reason, actorId: req.staff.id, actorName: req.staff.username });
+    const afterStock = item.currentStock;
+    item.lastUpdated = timestamp;
+    const movement = {
+      id: randomUUID(), itemId: item.id, itemName: item.name, type: 'restock', quantity, unit: item.unit,
+      reason, beforeStock, afterStock, lotId: lot.id, lotReceivedAt: lot.receivedAt, timestamp, actorId: req.staff.id, actorName: req.staff.username,
+    };
+    state.inventoryMovements.unshift(movement);
+    return movement;
   })));
   app.put('/api/dining/inventory/:id/image', roles('cashier', 'owner'), async (req, res) => {
     if (Object.keys(req.body || {}).length !== 1 || !Object.hasOwn(req.body, 'imageData')) fail('Provide a food photo to upload.');

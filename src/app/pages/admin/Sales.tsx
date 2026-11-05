@@ -1,6 +1,7 @@
-import { TrendingUp, DollarSign, ShoppingBag, Award, Receipt } from 'lucide-react';
+import { TrendingUp, ShoppingBag, Award, Receipt } from 'lucide-react';
 import { salesSummary } from '../../lib/sales';
 import StatCard from '../../components/StatCard';
+import PesoSign from '../../components/PesoSign';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { format } from 'date-fns';
 
@@ -159,9 +160,9 @@ export default function Sales() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
-        <StatCard title="Total Revenue (7 Days)" value={`₱${totalRevenue.toLocaleString()}`} icon={DollarSign} color="gold" />
+        <StatCard title="Total Revenue (7 Days)" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoSign} color="gold" />
         <StatCard title="Average Daily Sales" value={`₱${Math.round(averageDailySales).toLocaleString()}`} icon={TrendingUp} color="blue" />
-        <StatCard title="Today's Sales" value={`₱${todaySales.toLocaleString()}`} icon={DollarSign} color="green" />
+        <StatCard title="Today's Sales" value={`₱${todaySales.toLocaleString()}`} icon={PesoSign} color="green" />
         <StatCard title="Total Orders" value={totalOrders} icon={ShoppingBag} color="red" />
       </div>
 
@@ -188,7 +189,7 @@ export default function Sales() {
 
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <div className="flex items-center gap-3 mb-6">
-            <DollarSign className="h-6 w-6 text-amber-500" />
+            <PesoSign className="h-6 w-6 text-2xl text-amber-500" />
             <h2 className="text-xl font-semibold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Transaction Summary</h2>
           </div>
           <div className="space-y-4">

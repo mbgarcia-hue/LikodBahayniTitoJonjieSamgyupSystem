@@ -23,10 +23,11 @@ export function migrateState(state) {
 export function billFor(state, visit) {
   const orders = state.orders.filter(o => o.sessionId === visit.id);
   const additionalTotal = orders.filter(o => o.status !== 'cancelled').reduce((n, o) => n + o.totalAmount, 0);
-  const grossTotal = visit.packageTotal + additionalTotal;
+  const leftoverFeeAmount = visit.leftoverFee?.amount || 0;
+  const grossTotal = visit.packageTotal + additionalTotal + leftoverFeeAmount;
   const discountAmount = visit.discountAmount || 0;
   const blockers = orders.filter(o => !['served', 'cancelled'].includes(o.status));
-  return { additionalTotal, grossTotal, discountAmount, discountReason: visit.discountReason || '', total: Number((grossTotal - discountAmount).toFixed(2)), blockers: blockers.map(o => ({ id: o.id, batchNumber: o.batchNumber, status: o.status })), canClose: visit.status === 'pending_payment' && blockers.length === 0 };
+  return { additionalTotal, leftoverFeeAmount, grossTotal, discountAmount, discountReason: visit.discountReason || '', total: Number((grossTotal - discountAmount).toFixed(2)), blockers: blockers.map(o => ({ id: o.id, batchNumber: o.batchNumber, status: o.status })), canClose: visit.status === 'pending_payment' && blockers.length === 0 };
 }
 export function installAudit(database) {
   database.exec(`CREATE TABLE IF NOT EXISTS dining_events (

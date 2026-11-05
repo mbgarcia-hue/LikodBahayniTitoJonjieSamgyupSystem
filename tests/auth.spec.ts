@@ -51,7 +51,10 @@ test('profile saves to the signed-in account and survives reload', async ({ page
   await page.reload(); await expect(page.getByLabel('Full name', { exact: true })).toHaveValue('Restaurant Owner');
 });
 test('owner sales renders empty data without invalid chart coordinates', async ({ page }) => {
-  await login(page, 'owner'); await page.goto('/owner/sales');
+  await login(page, 'owner');
+  await expect(page.getByRole('img', { name: 'Philippine peso', exact: true })).toHaveCount(1);
+  await page.goto('/owner/sales');
   await expect(page.getByRole('heading', { name: 'Sales Monitoring' })).toBeVisible();
+  await expect(page.getByRole('img', { name: 'Philippine peso', exact: true })).toHaveCount(3);
   expect(await page.locator('svg').evaluateAll(nodes => nodes.every(node => !/NaN|Infinity/.test(node.outerHTML)))).toBe(true);
 });

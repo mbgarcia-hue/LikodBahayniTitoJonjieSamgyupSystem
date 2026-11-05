@@ -91,12 +91,24 @@ test('cashier-approved batches, stock reservations, strict service completion an
     await t.test('discounts and payment validation protect the final bill', async () => {
       for (const amount of [-1, 9999, 0.001]) assert.equal((await call(`/dining/visits/${visit.id}/discount`, { amount, reason: 'Staff approved' }, cashier, '', 'PATCH')).status, 400);
       assert.equal((await call(`/dining/visits/${visit.id}/discount`, { amount: 10.12, reason: 'Loyalty adjustment' }, cashier, '', 'PATCH')).status, 200);
+      const leftoverPath = `/dining/visits/${visit.id}/leftover-fee`;
+      const leftover = { leftoverDescription: 'Unconsumed grilled meat', customerInformed: true };
+      assert.equal((await call(leftoverPath, leftover, owner)).status, 403);
+      assert.equal((await call(leftoverPath, { ...leftover, customerInformed: false }, cashier)).status, 400);
+      assert.equal((await call(leftoverPath, { ...leftover, leftoverDescription: '' }, cashier)).status, 400);
+      const fee = await call(leftoverPath, leftover, cashier);
+      assert.equal(fee.status, 200);
+      assert.equal(fee.data.leftoverFeeAmount, 300);
+      assert.equal(fee.data.total, 994.88);
+      assert.equal((await call(leftoverPath, leftover, cashier)).status, 409);
       const customerBill = (await call(`/dining/visits/${visit.id}`, undefined, '', phone.token)).data;
-      assert.equal(customerBill.total, 694.88); assert.equal(customerBill.discountReason, 'Loyalty adjustment');
-      assert.equal((await pay(705)).status, 409); assert.equal((await pay(694.88, 100)).status, 400);
-      assert.equal((await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'online', expectedTotal: 694.88 }, cashier)).status, 400);
-      const payment = await pay(694.88); assert.equal(payment.status, 200); assert.equal(payment.data.totalBill, 694.88); assert.equal(payment.data.discountAmount, 10.12); assert.equal(payment.data.change, 305.12); assert.equal(payment.data.confirmedByName, 'cashier');
-      assert.equal((await pay(694.88)).data.id, payment.data.id);
+      assert.equal(customerBill.total, 994.88); assert.equal(customerBill.discountReason, 'Loyalty adjustment');
+      assert.equal(customerBill.leftoverFeeAmount, 300);
+      assert.equal(customerBill.session.leftoverFee.description, leftover.leftoverDescription);
+      assert.equal((await pay(705)).status, 409); assert.equal((await pay(994.88, 100)).status, 400);
+      assert.equal((await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'online', expectedTotal: 994.88 }, cashier)).status, 400);
+      const payment = await pay(994.88); assert.equal(payment.status, 200); assert.equal(payment.data.totalBill, 994.88); assert.equal(payment.data.discountAmount, 10.12); assert.equal(payment.data.leftoverFeeAmount, 300); assert.equal(payment.data.leftoverFee.description, leftover.leftoverDescription); assert.equal(payment.data.change, 5.12); assert.equal(payment.data.confirmedByName, 'cashier');
+      assert.equal((await pay(994.88)).data.id, payment.data.id);
     });
     await t.test('closure preserves served states and append-only staff/customer audit history', async () => {
       const current = await state(); assert.deepEqual(current.orders.map(o => o.status), ['served','served','cancelled']);
@@ -106,6 +118,8 @@ test('cashier-approved batches, stock reservations, strict service completion an
       const events = (await call(`/dining/visits/${visit.id}/audit`, undefined, cashier)).data;
       assert.ok(events.some(e => e.event_type === 'batch_approved' && e.actor_name === 'cashier'));
       assert.ok(events.some(e => e.event_type === 'batch_preparing' && e.actor_role === 'kitchen'));
+      assert.equal(events.filter(e => e.event_type === 'leftover_fee_approved').length, 1);
+      assert.equal(events.find(e => e.event_type === 'leftover_fee_approved').actor_name, 'cashier');
       assert.ok(events.some(e => e.event_type === 'session_closed'));
       assert.throws(() => db.prepare('DELETE FROM dining_events WHERE id=?').run(events[0].id), /append-only/);
       assert.throws(() => db.prepare('UPDATE dining_events SET event_type=? WHERE id=?').run('changed', events[0].id), /append-only/);
