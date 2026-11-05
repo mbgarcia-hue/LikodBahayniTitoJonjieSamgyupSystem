@@ -40,9 +40,9 @@ test('one visit approval gates all phones and automatically routes later batches
   try {
     cashier = (await call('/staff/login', { username: 'cashier', password: 'InitialTest@123', role: 'cashier' })).cookie;
     kitchen = (await call('/staff/login', { username: 'kitchen', password: 'InitialTest@123', role: 'kitchen' })).cookie;
-    visit = (await call('/dining/open', { tableNumber: 1, regularPax: 1, discountedPax: 0 }, cashier)).data;
-    a = (await call('/dining/join', { tableNumber: 1, code: visit.code })).data;
-    b = (await call('/dining/join', { tableNumber: 1, code: visit.code })).data;
+    visit = (await call('/dining/open', { tableNumber: 1, customerName: 'Approval Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+    a = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'Approval Guest' })).data;
+    b = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'Approval Guest' })).data;
     await t.test('multiple phones queue before approval and cannot forge or skip the first approval', async () => {
       initial = (await submit(a, 'first')).data;
       queued = (await submit(b, 'queued', 'add-2')).data;
@@ -98,19 +98,19 @@ test('one visit approval gates all phones and automatically routes later batches
         }
         assert.equal((await call(`/dining/orders/${order.id}`, { status: 'served' }, kitchen, '', 'PATCH')).status, 200);
       }
-      const paid = await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: 400, expectedTotal: 360 }, cashier);
-      assert.equal(paid.status, 200); assert.equal(paid.data.totalBill, 360);
+      const paid = await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: 600, expectedTotal: 580 }, cashier);
+      assert.equal(paid.status, 200); assert.equal(paid.data.totalBill, 580);
       assert.equal((await submit(a, 'closed')).status, 409);
-      const next = (await call('/dining/open', { tableNumber: 1, regularPax: 1, discountedPax: 0 }, cashier)).data;
-      const nextPhone = (await call('/dining/join', { tableNumber: 1, code: next.code })).data;
+      const next = (await call('/dining/open', { tableNumber: 1, customerName: 'Next Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+      const nextPhone = (await call('/dining/join', { tableNumber: 1, code: next.code, customerName: 'Next Guest' })).data;
       const first = await submit(nextPhone, 'new-visit-first');
       assert.equal(first.data.status, 'submitted'); assert.equal(first.data.approvalType, undefined);
       assert.equal((await call(`/dining/visits/${next.id}`, undefined, '', nextPhone.token)).data.session.initialBatchApproved, false);
       assert.equal((await call('/dining/state', undefined, kitchen)).data.orders.length, 0);
     });
     await t.test('existing verified visits release old queued batches on startup without inventing a reviewer', async () => {
-      const legacy = (await call('/dining/open', { tableNumber: 3, regularPax: 1, discountedPax: 0 }, cashier)).data;
-      const phone = (await call('/dining/join', { tableNumber: 3, code: legacy.code })).data;
+      const legacy = (await call('/dining/open', { tableNumber: 3, customerName: 'Legacy Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+      const phone = (await call('/dining/join', { tableNumber: 3, code: legacy.code, customerName: 'Legacy Guest' })).data;
       const first = (await submit(phone, 'legacy-first')).data;
       await call(`/dining/orders/${first.id}/approve`, { expectedTotal: 35 }, cashier);
       const stored = JSON.parse(db.prepare('SELECT body FROM dining_state WHERE id=1').get().body);

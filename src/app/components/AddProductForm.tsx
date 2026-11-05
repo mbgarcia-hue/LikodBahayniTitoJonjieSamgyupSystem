@@ -2,6 +2,7 @@ import { useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
 import { useRestaurant } from '../context/RestaurantContext';
+import FoodImagePicker from './FoodImagePicker';
 
 const initial = { name: '', category: 'Additional Items', price: '', description: '', unit: 'pcs', currentStock: '', lowStockThreshold: '5', stockPerOrder: '1', visible: true };
 const fieldClass = 'mt-1 w-full rounded-lg border border-amber-600/40 bg-[#1A1210] px-3 py-2 text-amber-100 focus:outline-none focus:border-amber-400';
@@ -10,14 +11,15 @@ export default function AddProductForm() {
   const { addProduct } = useRestaurant();
   const [open, setOpen] = useState(false);
   const [form, setForm] = useState(initial);
+  const [image, setImage] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (busy) return;
     setBusy(true);
     try {
-      const saved = await addProduct({ name: form.name, category: form.category, price: Number(form.price), description: form.description, unit: form.unit, currentStock: Number(form.currentStock), lowStockThreshold: Number(form.lowStockThreshold), stockPerOrder: Number(form.stockPerOrder), hiddenFromMenu: !form.visible });
-      if (saved) { setForm(initial); setOpen(false); toast.success('Product added to inventory and menu.'); }
+      const saved = await addProduct({ name: form.name, category: form.category, price: Number(form.price), description: form.description, unit: form.unit, currentStock: Number(form.currentStock), lowStockThreshold: Number(form.lowStockThreshold), stockPerOrder: Number(form.stockPerOrder), hiddenFromMenu: !form.visible }, image || undefined);
+      if (saved) { setForm(initial); setImage(null); setOpen(false); toast.success('Product added to inventory and menu.'); }
     } finally { setBusy(false); }
   }
   return <section className="mb-6">
@@ -25,6 +27,11 @@ export default function AddProductForm() {
     {open && <form id="add-product-form" onSubmit={submit} className="mt-4 rounded-xl border border-amber-600/30 bg-[#252018] p-6">
       <h2 className="text-xl font-semibold text-amber-300">New product</h2>
       <p className="mt-1 mb-4 text-sm text-amber-400/70">Add stock and its customer menu entry together. A price of zero means the product is included in the guest package.</p>
+      <div className="mb-5 max-w-xl">
+        <p className="mb-2 text-sm text-amber-200">Food photo (optional)</p>
+        <FoodImagePicker image="/menu/salad.webp" file={image} label="Food photo" disabled={busy} onFileChange={setImage} />
+        <p className="mt-2 text-xs text-amber-400/70">JPEG, PNG or WebP · up to 3 MB. Photos are optimized when saved.</p>
+      </div>
       <fieldset disabled={busy} className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 text-sm text-amber-200">
         <label>Product name<input className={fieldClass} value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} required maxLength={100} /></label>
         <label>Menu category<input className={fieldClass} value={form.category} onChange={e => setForm({ ...form, category: e.target.value })} required maxLength={60} list="product-categories" /><datalist id="product-categories">{['Meat', 'Side Dishes', 'Sauces', 'Additional Items'].map(c => <option key={c} value={c} />)}</datalist></label>

@@ -1,15 +1,17 @@
 import { useState } from 'react';
 import { Search, Edit, Package, Archive, ArchiveRestore, TrendingDown, TrendingUp, AlertTriangle, Clock } from 'lucide-react';
-import { useRestaurant } from '../../context/RestaurantContext';
+import { useRestaurant } from '../context/RestaurantContext';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
-import AddProductForm from '../../components/AddProductForm';
-import InventoryMenuVisibility from '../../components/InventoryMenuVisibility';
-import { formatStock } from '../../lib/inventory';
+import AddProductForm from '../components/AddProductForm';
+import InventoryMenuVisibility from '../components/InventoryMenuVisibility';
+import InventoryImageEditor from '../components/InventoryImageEditor';
+import OwnerPricingSettings from '../components/OwnerPricingSettings';
+import { formatStock } from '../lib/inventory';
 
 type Tab = 'inventory' | 'archive' | 'log';
 
-export default function Inventory() {
+export default function Inventory({ canManage = false }: { canManage?: boolean }) {
   const { inventory, inventoryMovements, updateInventory, archiveInventoryItem, getLowStockItems, getOutOfStockItems } = useRestaurant();
   const [searchTerm, setSearchTerm] = useState('');
   const [filterStatus, setFilterStatus] = useState<'all' | 'available' | 'low' | 'out'>('all');
@@ -99,11 +101,11 @@ export default function Inventory() {
       {/* Header */}
       <div className="mb-6">
         <h1 className="text-3xl font-bold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Inventory Overview</h1>
-        <p className="text-amber-500/60 mt-1">Shared stock and movement history saved to the database. Enter available quantities in the units shown; submitted batches have already reserved their stock.</p>
+        <p className="text-amber-500/60 mt-1">{canManage ? 'Shared stock and movement history saved to the database. Enter available quantities in the units shown; submitted batches have already reserved their stock.' : 'View shared stock levels and movement history. Submitted batches have already reserved their stock.'}</p>
       </div>
 
       {/* Low-stock alert banner */}
-      <AddProductForm />
+      {canManage && <><OwnerPricingSettings /><AddProductForm /></>}
       {(lowStockItems.length > 0 || outOfStockItems.length > 0) && (
         <div className="mb-6 rounded-xl border border-red-600/30 bg-red-950/25 p-4 space-y-2">
           <div className="flex items-center gap-2 mb-3">
@@ -202,26 +204,28 @@ export default function Inventory() {
             <table className="w-full">
               <thead className="bg-[#1A1210] border-b border-amber-600/30">
                 <tr>
+                  <th className="px-4 py-4 text-left text-sm font-semibold text-amber-400/80">Photo</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Item Name</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Current Stock</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Unit</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Low Threshold</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Last Updated</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Status</th>
-                  <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Actions</th>
+                  {canManage && <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-amber-600/20">
                 {filteredInventory.length === 0 && (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-amber-500/40 text-sm">No items match your search</td></tr>
+                  <tr><td colSpan={canManage ? 8 : 7} className="px-6 py-10 text-center text-amber-500/40 text-sm">No items match your search</td></tr>
                 )}
                 {filteredInventory.map((item) => {
                   const status = getStockStatus(item);
                   return (
                     <tr key={item.id} className="hover:bg-amber-600/10 transition-colors">
+                      <td className="px-4 py-3"><InventoryImageEditor item={item} /></td>
                       <td className="px-6 py-4 font-medium text-amber-200">{item.name}</td>
                       <td className="px-6 py-4">
-                        {editingItem === item.id ? (
+                        {canManage && editingItem === item.id ? (
                           <input
                             type="number"
                             aria-label={`Available stock for ${item.name}`}
@@ -246,7 +250,7 @@ export default function Inventory() {
                           {getStatusText(status)}
                         </span>
                       </td>
-                      <td className="px-6 py-4">
+                      {canManage && <td className="px-6 py-4">
                         {editingItem === item.id ? (
                           <div className="flex gap-2 flex-wrap">
                             <button disabled={saving} onClick={() => handleSave(item.id)} className="rounded bg-green-700 px-3 py-1 text-xs font-medium text-white hover:bg-green-600 transition-colors">{saving ? 'Saving…' : 'Save'}</button>
@@ -264,7 +268,7 @@ export default function Inventory() {
                           </button>
                         )}
                         <InventoryMenuVisibility item={item} />
-                      </td>
+                      </td>}
                     </tr>
                   );
                 })}
@@ -286,21 +290,23 @@ export default function Inventory() {
             <table className="w-full">
               <thead className="bg-[#1A1210] border-b border-amber-600/30">
                 <tr>
+                  <th className="px-4 py-4 text-left text-sm font-semibold text-amber-400/80">Photo</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Item Name</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Stock</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Unit</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Low Threshold</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Last Updated</th>
                   <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Archived At</th>
-                  <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Actions</th>
+                  {canManage && <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Actions</th>}
                 </tr>
               </thead>
               <tbody className="divide-y divide-amber-600/20">
                 {filteredArchive.length === 0 && (
-                  <tr><td colSpan={7} className="px-6 py-10 text-center text-amber-500/40 text-sm">No archived items</td></tr>
+                  <tr><td colSpan={canManage ? 8 : 7} className="px-6 py-10 text-center text-amber-500/40 text-sm">No archived items</td></tr>
                 )}
                 {filteredArchive.map((item) => (
                   <tr key={item.id} className="opacity-70 hover:opacity-100 transition-opacity">
+                    <td className="px-4 py-3"><InventoryImageEditor item={item} /></td>
                     <td className="px-6 py-4 font-medium text-amber-200">{item.name}</td>
                     <td className="px-6 py-4 font-semibold text-amber-200">{item.currentStock}</td>
                     <td className="px-6 py-4 text-amber-400/70">{item.unit}</td>
@@ -309,7 +315,7 @@ export default function Inventory() {
                     <td className="px-6 py-4 text-sm text-amber-500/50">
                       {item.archivedAt ? format(new Date(item.archivedAt), 'MMM d, yyyy · h:mm a') : <span className="text-amber-600/30 italic">—</span>}
                     </td>
-                    <td className="px-6 py-4">
+                    {canManage && <td className="px-6 py-4">
                       <button
                         onClick={() => archiveInventoryItem(item.id, false)}
                         className="flex items-center gap-1.5 rounded bg-amber-800/50 border border-amber-600/40 px-3 py-1 text-xs font-medium text-amber-300 hover:bg-amber-700/60 transition-colors"
@@ -317,7 +323,7 @@ export default function Inventory() {
                         <ArchiveRestore className="h-3 w-3" /> Restore
                       </button>
                       <InventoryMenuVisibility item={item} />
-                    </td>
+                    </td>}
                   </tr>
                 ))}
               </tbody>

@@ -11,6 +11,6 @@ export default defineConfig({
     command: 'node server/index.js',
     url: 'http://127.0.0.1:3107/api/health',
     reuseExistingServer: false,
-    env: { PORT: '3107', DATABASE_PATH: path.resolve(`tests/.tmp/browser-${randomUUID()}.sqlite`), CASHIER_PASSWORD: 'Cashier@123', KITCHEN_PASSWORD: 'Kitchen@123', OWNER_PASSWORD: 'Owner@123' },
+    env: { PORT: '3107', DATABASE_PATH: path.resolve(`tests/.tmp/browser-${randomUUID()}.sqlite`), MENU_IMAGE_DIR: path.resolve(`tests/.tmp/menu-images-${randomUUID()}`), CASHIER_PASSWORD: 'Cashier@123', KITCHEN_PASSWORD: 'Kitchen@123', OWNER_PASSWORD: 'Owner@123' },
   },
 });

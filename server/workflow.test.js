@@ -27,15 +27,15 @@ test('cashier-approved batches, stock reservations, strict service completion an
     return { status: res.status, data: await res.json(), cookie: res.headers.get('set-cookie')?.split(';')[0] };
   }
   const login = async role => (await call('/staff/login', { username: role, password: role[0].toUpperCase()+role.slice(1)+'@123', role })).cookie;
-  let cashier, kitchen, visit, phone, first, second, cancelled, savedFirst;
+  let cashier, kitchen, owner, visit, phone, first, second, cancelled, savedFirst;
   const state = async () => (await call('/dining/state', undefined, cashier)).data;
   const patch = (o, status, cookie = kitchen) => call(`/dining/orders/${o.id}`, { status }, cookie, '', 'PATCH');
   const pay = (total, cash = 1000) => call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: cash, expectedTotal: total }, cashier);
   try {
-    cashier = await login('cashier'); kitchen = await login('kitchen');
+    cashier = await login('cashier'); kitchen = await login('kitchen'); owner = await login('owner');
     await t.test('multiple submissions remain separate, numbered and hidden from kitchen', async () => {
-      visit = (await call('/dining/open', { tableNumber: 1, regularPax: 2, discountedPax: 1 }, cashier)).data;
-      phone = (await call('/dining/join', { tableNumber: 1, code: visit.code })).data;
+      visit = (await call('/dining/open', { tableNumber: 1, customerName: 'Workflow Guest', regularPax: 2, discountedPax: 1 }, cashier)).data;
+      phone = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'Workflow Guest' })).data;
       const submit = items => call(`/dining/visits/${visit.id}/orders`, { requestId: `batch-${Math.random()}`, items, notes: 'Review with customer' }, '', phone.token);
       first = (await submit([{ menuItemId: 'add-1', quantity: 2, price: 1 }])).data;
       second = (await submit([{ menuItemId: 'meat-0', quantity: 1 }])).data;
@@ -111,18 +111,18 @@ test('cashier-approved batches, stock reservations, strict service completion an
       assert.throws(() => db.prepare('UPDATE dining_events SET event_type=? WHERE id=?').run('changed', events[0].id), /append-only/);
       assert.equal((await call(`/dining/visits/${visit.id}/audit`, undefined, kitchen)).status, 403);
       assert.equal((await patch(first,'served')).status, 409); assert.equal((await call(`/dining/visits/${visit.id}/reopen`, {}, cashier)).status, 409);
-      const next = (await call('/dining/open', { tableNumber: 1, regularPax: 1, discountedPax: 0 }, cashier)).data; assert.notEqual(next.id, visit.id);
+      const next = (await call('/dining/open', { tableNumber: 1, customerName: 'Next Guest', regularPax: 2, discountedPax: 0 }, cashier)).data; assert.notEqual(next.id, visit.id);
       assert.equal((await call(`/dining/visits/${next.id}`, undefined, '', phone.token)).status, 401);
     });
     await t.test('concurrent submissions cannot oversell reserved stock', async () => {
-      const next = (await call('/dining/open', { tableNumber: 2, regularPax: 1, discountedPax: 0 }, cashier)).data;
-      const joiner = (await call('/dining/join', { tableNumber: 2, code: next.code })).data;
-      await call('/dining/inventory/inv-13', { currentStock: 1 }, cashier, '', 'PATCH');
+      const next = (await call('/dining/open', { tableNumber: 2, customerName: 'Second Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+      const joiner = (await call('/dining/join', { tableNumber: 2, code: next.code, customerName: 'Second Guest' })).data;
+      await call('/dining/inventory/inv-13', { currentStock: 1 }, owner, '', 'PATCH');
       const attempts = await Promise.all(['one','two'].map(requestId => call(`/dining/visits/${next.id}/orders`, { requestId, items: [{ menuItemId: 'add-1', quantity: 1 }] }, '', joiner.token)));
       assert.deepEqual(attempts.map(r => r.status).sort(), [200,409]);
       assert.equal((await state()).inventory.find(i => i.id === 'inv-13').currentStock, 0);
       const reservedBatch = attempts.find(r => r.status === 200).data;
-      await call(`/dining/visits/${next.id}/discount`, { amount: 250, reason: 'Staff adjustment' }, cashier, '', 'PATCH');
+      await call(`/dining/visits/${next.id}/discount`, { amount: 470, reason: 'Staff adjustment' }, cashier, '', 'PATCH');
       assert.equal((await call(`/dining/orders/${reservedBatch.id}/cancel`, { reason: 'Customer changed mind' }, cashier)).status, 409);
       assert.equal((await state()).inventory.find(i => i.id === 'inv-13').currentStock, 0);
       assert.equal(db.prepare("SELECT count(*) AS n FROM dining_events WHERE order_id=? AND event_type='batch_cancelled'").get(reservedBatch.id).n, 0);

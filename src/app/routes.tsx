@@ -6,12 +6,11 @@ import OwnerLayout from "./layouts/OwnerLayout";
 import AdminDashboard from "./pages/admin/Dashboard";
 import AdminOrders from "./pages/admin/Orders";
 import StaffDining from "./pages/StaffDining";
-import AdminInventory from "./pages/admin/Inventory";
+import Inventory from "./pages/Inventory";
 import AdminSales from "./pages/admin/Sales";
 import AdminProfile from "./pages/admin/Profile";
 
 import CashierOrders from "./pages/cashier/Orders";
-import CashierInventory from "./pages/cashier/Inventory";
 import CashierProfile from "./pages/cashier/Profile";
 
 import OwnerDashboard from "./pages/owner/Dashboard";
@@ -46,7 +45,7 @@ export const router = createBrowserRouter([
       { index: true, Component: CashierOrders },
       { path: "orders", Component: CashierOrders },
       { path: "billing", Component: StaffDining },
-      { path: "inventory", Component: CashierInventory },
+      { path: "inventory", element: <Inventory /> },
       { path: "qr-tables", element: <Navigate to="/cashier/billing" replace /> },
       { path: "profile", Component: CashierProfile },
     ],
@@ -59,6 +58,7 @@ export const router = createBrowserRouter([
     Component: OwnerLayout,
     children: [
       { index: true, Component: OwnerDashboard },
+      { path: "inventory", element: <Inventory canManage /> },
       { path: "sales", Component: OwnerSales },
       { path: "profile", Component: OwnerProfile },
     ],
@@ -86,7 +86,7 @@ export const router = createBrowserRouter([
       { index: true, Component: AdminDashboard },
       { path: "orders", Component: AdminOrders },
       { path: "billing", Component: StaffDining },
-      { path: "inventory", Component: AdminInventory },
+      { path: "inventory", element: <Inventory canManage /> },
       { path: "sales", Component: AdminSales },
       { path: "qr-tables", element: <Navigate to="/admin/billing" replace /> },
       { path: "profile", Component: AdminProfile },

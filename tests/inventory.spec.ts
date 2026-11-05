@@ -1,13 +1,48 @@
 import { test, expect } from '@playwright/test';
 
-for (const role of ['cashier', 'owner']) {
-  test(`${role}: actual stock rejects blanks, retains failed edits and persists saved quantities`, async ({ page }) => {
-    await page.goto(`/${role}/login`);
-    await page.getByLabel('Username', { exact: true }).fill(role);
-    await page.getByLabel('Password', { exact: true }).fill(`${role[0].toUpperCase()}${role.slice(1)}@123`);
+test('owner configures package rates and menu prices within enforced bounds', async ({ page }) => {
+  await page.goto('/owner/login');
+  await page.getByLabel('Username', { exact: true }).fill('owner');
+  await page.getByLabel('Password', { exact: true }).fill('Owner@123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.goto('/owner/inventory');
+  await page.getByLabel('Regular guest package price', { exact: true }).fill('230');
+  await page.getByLabel('Discounted guest package price', { exact: true }).fill('200');
+  await page.getByRole('button', { name: 'Save package prices', exact: true }).click();
+  await expect(page.getByText('Guest package prices saved for new visits.', { exact: true }).first()).toBeVisible();
+  let state = await (await page.request.get('/api/dining/state')).json();
+  expect(state.pricing).toEqual({ regularGuestPrice: 230, discountedGuestPrice: 200 });
+
+  const pricingDetails = page.locator('details').filter({ hasText: 'Menu item prices and limits' });
+  await pricingDetails.locator('summary').click();
+  const coke = pricingDetails.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Coke', exact: true }) });
+  await coke.getByLabel('Price for Coke', { exact: true }).fill('40');
+  await coke.getByLabel('Minimum price for Coke', { exact: true }).fill('35');
+  await coke.getByLabel('Maximum price for Coke', { exact: true }).fill('45');
+  await coke.getByRole('button', { name: 'Save price', exact: true }).click();
+  await expect(page.getByText('Coke pricing saved.', { exact: true }).first()).toBeVisible();
+  state = await (await page.request.get('/api/dining/state')).json();
+  expect(state.menu.find((item: { id: string }) => item.id === 'add-1')).toMatchObject({ price: 40, priceMinimum: 35, priceMaximum: 45 });
+  expect((await page.request.patch('/api/dining/menu/add-1/pricing', { data: { price: 30, priceMinimum: 35, priceMaximum: 45 } })).status()).toBe(400);
+
+  await page.getByLabel('Regular guest package price', { exact: true }).fill('220');
+  await page.getByLabel('Discounted guest package price', { exact: true }).fill('195');
+  await page.getByRole('button', { name: 'Save package prices', exact: true }).click();
+  await expect(page.getByText('Guest package prices saved for new visits.', { exact: true }).first()).toBeVisible();
+  await coke.getByLabel('Price for Coke', { exact: true }).fill('35');
+  await coke.getByLabel('Minimum price for Coke', { exact: true }).fill('0');
+  await coke.getByLabel('Maximum price for Coke', { exact: true }).fill('1000000');
+  await coke.getByRole('button', { name: 'Save price', exact: true }).click();
+  await expect(page.getByText('Coke pricing saved.', { exact: true }).first()).toBeVisible();
+});
+
+test('owner: actual stock rejects blanks, retains failed edits and persists saved quantities', async ({ page }) => {
+    await page.goto('/owner/login');
+    await page.getByLabel('Username', { exact: true }).fill('owner');
+    await page.getByLabel('Password', { exact: true }).fill('Owner@123');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await expect(page).toHaveURL(role === 'cashier' ? /\/cashier\/billing$/ : /\/owner$/);
-    await page.goto(role === 'cashier' ? '/cashier/inventory' : '/admin/inventory');
+    await expect(page).toHaveURL(/\/owner$/);
+    await page.goto('/owner/inventory');
     const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Rice', exact: true }) });
     const original = (await (await page.request.get('/api/dining/state')).json()).inventory.find(i => i.id === 'inv-7').currentStock;
     await row.getByRole('button', { name: 'Edit', exact: true }).click();
@@ -39,22 +74,46 @@ for (const role of ['cashier', 'owner']) {
     await row.getByRole('button', { name: 'Save', exact: true }).click();
     await expect(row.getByRole('cell', { name: 'Out of Stock', exact: true })).toBeVisible();
     expect((await page.request.patch('/api/dining/inventory/inv-7', { data: { currentStock: original } })).ok()).toBe(true);
-  });
-}
+    await page.goto('/admin/inventory');
+    await expect(page.getByRole('heading', { name: 'Inventory Overview', exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add product', exact: true })).toBeVisible();
+});
 
-test('cashier adds a product and hides or restores it on a customer menu without losing submitted history', async ({ browser }) => {
+test('cashier inventory uses the shared page in read-only mode', async ({ page }) => {
+  await page.goto('/cashier/login');
+  await page.getByLabel('Username', { exact: true }).fill('cashier');
+  await page.getByLabel('Password', { exact: true }).fill('Cashier@123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page).toHaveURL(/\/cashier\/billing$/);
+  await page.goto('/cashier/inventory');
+  await expect(page.getByRole('heading', { name: 'Inventory Overview', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Movement Log' })).toBeVisible();
+  await expect(page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Rice', exact: true }) }).getByRole('cell', { name: /kg/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Add product', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Hide .* from customer menu/ })).toHaveCount(0);
+  expect((await page.request.patch('/api/dining/inventory/inv-7', { data: { currentStock: 12 } })).status()).toBe(403);
+  expect((await page.request.post('/api/dining/inventory', { data: {} })).status()).toBe(403);
+  const photoInput = page.getByLabel('Food photo for Rice');
+  await photoInput.setInputFiles('public/menu/grill.webp');
+  await expect(page.getByText('Rice photo updated.', { exact: true })).toBeVisible();
+  await expect(page.locator('.food-image-picker-compact img[src*="/uploads/menu/"]')).toHaveCount(1);
+});
+
+test('owner adds a product and controls its customer menu visibility without losing submitted history', async ({ browser }) => {
   test.setTimeout(90000);
   const staff = await browser.newContext(), customer = await browser.newContext();
   try {
     const cashier = await staff.newPage();
-    await cashier.goto('/cashier/login');
-    await cashier.getByLabel('Username', { exact: true }).fill('cashier');
-    await cashier.getByLabel('Password', { exact: true }).fill('Cashier@123');
+    await cashier.goto('/owner/login');
+    await cashier.getByLabel('Username', { exact: true }).fill('owner');
+    await cashier.getByLabel('Password', { exact: true }).fill('Owner@123');
     await cashier.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await expect(cashier).toHaveURL(/\/cashier\/billing$/);
-    const visit = await (await staff.request.post('/api/dining/open', { data: { tableNumber: 10, regularPax: 1, discountedPax: 0 } })).json();
-    await cashier.goto('/cashier/inventory');
+    await expect(cashier).toHaveURL(/\/owner$/);
+    const visit = await (await staff.request.post('/api/dining/open', { data: { tableNumber: 10, customerName: 'Mango Customer', regularPax: 2, discountedPax: 0 } })).json();
+    await cashier.goto('/owner/inventory');
     await cashier.getByRole('button', { name: 'Add product', exact: true }).click();
+    await cashier.getByLabel('Food photo', { exact: true }).setInputFiles('public/menu/grill.webp');
     await cashier.getByLabel('Product name', { exact: true }).fill('Mango Shake');
     await cashier.getByLabel('Menu category', { exact: true }).fill('Drinks');
     await cashier.getByLabel('Price per order (₱)', { exact: true }).fill('65');
@@ -79,9 +138,25 @@ test('cashier adds a product and hides or restores it on a customer menu without
     await expect(row).toBeVisible();
     const phone = await customer.newPage();
     await phone.goto('/customer/10');
+    await phone.getByLabel('Exact customer name from cashier', { exact: true }).fill('Mango Customer');
     await phone.getByLabel('Visit code').fill(visit.code);
     await phone.getByRole('button', { name: 'Open menu', exact: true }).click();
     await expect(phone.getByRole('heading', { name: 'Mango Shake', exact: true })).toBeVisible();
+    await expect(phone.getByText('Billing name: Mango Customer', { exact: false })).toBeVisible();
+    const uploadedPhoto = phone.getByRole('img', { name: 'Mango Shake', exact: true });
+    await expect(uploadedPhoto).toHaveAttribute('src', /\/uploads\/menu\/.+\.webp/);
+    const photoUrl = await uploadedPhoto.getAttribute('src');
+    if (!photoUrl) throw new Error('Uploaded product photo is missing its source URL');
+    const photoResponse = await phone.request.get(photoUrl);
+    expect(photoResponse.status()).toBe(200);
+    expect(photoResponse.headers()['content-type']).toContain('image/webp');
+    await uploadedPhoto.scrollIntoViewIfNeeded();
+    await expect.poll(() => uploadedPhoto.evaluate(image => (image as HTMLImageElement).naturalWidth)).toBeGreaterThan(0);
+    await expect(phone.getByRole('navigation', { name: 'Your table' })).toBeVisible();
+    await phone.setViewportSize({ width: 390, height: 844 });
+    await phone.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await expect.poll(() => phone.locator('.customer-sticky').evaluate(element => Math.round(element.getBoundingClientRect().top))).toBe(0);
+    expect(await phone.locator('.menu-grid').evaluate(element => getComputedStyle(element).gridTemplateColumns.split(' ').length)).toBe(1);
     await phone.getByRole('button', { name: 'Add Mango Shake to batch', exact: true }).click();
     await phone.getByRole('button', { name: 'Your cart (1)', exact: true }).click();
     await phone.getByRole('button', { name: 'Submit batch', exact: true }).click();

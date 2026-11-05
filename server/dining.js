@@ -1,11 +1,25 @@
 import { randomUUID, randomInt } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { mkdir, unlink, writeFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import sharp from 'sharp';
 import database from './database.js';
 import { installAuth, staffOnly, roles } from './auth.js';
 import { migrateState, billFor, installAudit, kitchenStatuses, initialApprovalFor, firstSubmittedFor } from './dining-workflow.js';
 
 const seed = JSON.parse(readFileSync(new URL('./seed.json', import.meta.url), 'utf8'));
+const menuImageDirectory = resolve(process.env.MENU_IMAGE_DIR || fileURLToPath(new URL('../data/menu-images', import.meta.url)));
+const defaultPricing = { regularGuestPrice: 220, discountedGuestPrice: 195 };
+const maxMenuPrice = 1000000;
 const fail = (message, status = 400) => { const e = new Error(message); e.status = status; throw e; };
+function pricingFor(state) {
+  return { ...defaultPricing, ...state.pricing };
+}
+function moneyNumber(value, label) {
+  if (!Number.isFinite(value) || value < 0 || value > maxMenuPrice || Math.abs(value * 100 - Math.round(value * 100)) > 0.000001) fail(`${label} must be between 0 and ${maxMenuPrice} with at most two decimal places`);
+  return value;
+}
 // New products carry their stock link in SQLite; retain the original recipe rules.
 function stockRule(menu) {
   return menu.inventoryId ? { inventoryId: menu.inventoryId, amount: menu.stockPerOrder } : seed.rules[menu.name];
@@ -22,6 +36,36 @@ function textField(value, label, maxLength) {
 function stockNumber(value, label, minimum = 0) {
   if (!Number.isFinite(value) || value < minimum || value > 100000000 || Math.abs(value * 10000 - Math.round(value * 10000)) > 0.00001) fail(`${label} must be between ${minimum} and 100000000 with at most four decimal places`);
   return value;
+}
+async function storeMenuImage(dataUrl) {
+  const match = typeof dataUrl === 'string' && dataUrl.length <= 4_200_000
+    ? /^data:image\/(jpeg|png|webp);base64,([A-Za-z0-9+/]+={0,2})$/.exec(dataUrl)
+    : null;
+  if (!match) fail('Upload a JPEG, PNG or WebP food photo smaller than 3 MB.');
+  const input = Buffer.from(match[2], 'base64');
+  if (!input.length || input.length > 3 * 1024 * 1024) fail('Upload a food photo smaller than 3 MB.');
+  let metadata;
+  try {
+    metadata = await sharp(input, { limitInputPixels: 40_000_000 }).metadata();
+  } catch {
+    fail('The selected file is not a valid food photo.');
+  }
+  const expectedFormat = { jpeg: 'jpeg', png: 'png', webp: 'webp' }[match[1]];
+  if (metadata.format !== expectedFormat || !metadata.width || !metadata.height) fail('The selected file is not a valid food photo.');
+  let output;
+  try {
+    output = await sharp(input, { limitInputPixels: 40_000_000 }).rotate().resize(1200, 900, { fit: 'inside', withoutEnlargement: true }).webp({ quality: 82, effort: 4 }).toBuffer();
+  } catch {
+    fail('The selected food photo could not be optimized.');
+  }
+  await mkdir(menuImageDirectory, { recursive: true });
+  const filename = `${randomUUID()}.webp`;
+  const filePath = resolve(menuImageDirectory, filename);
+  await writeFile(filePath, output, { flag: 'wx' });
+  return { url: `/uploads/menu/${filename}`, filePath };
+}
+function menuForInventory(state, item) {
+  return state.menu.find(menu => menu.inventoryId === item.id || stockRule(menu)?.inventoryId === item.id);
 }
 
 const attempts = new Map();
@@ -52,6 +96,12 @@ database.transaction(() => {
   }
   // Existing verified visits adopt follow-up routing without inventing past staff approvals.
   for (const visit of state.sessions.filter(s => s.status !== 'closed')) {
+    if (!Object.hasOwn(visit, 'customerNameSetBy')) {
+      delete visit.customerName;
+      visit.tokens = [];
+      visit.customerNameSetBy = 'security-upgrade';
+      changed = true;
+    }
     const initial = initialApprovalFor(state, visit.id);
     if (initial && routeFollowUps(state, visit.id, initial)) changed = true;
   }
@@ -85,29 +135,55 @@ function customer(req, state) {
 }
 function view(state, s) {
   const orders = state.orders.filter(o => o.sessionId === s.id);
-  return { session: { id: s.id, tableNumber: s.tableNumber, status: s.status, regularPax: s.regularPax, discountedPax: s.discountedPax, packageTotal: s.packageTotal, initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) },
+  return { session: { id: s.id, tableNumber: s.tableNumber, customerName: s.customerName, status: s.status, regularPax: s.regularPax, discountedPax: s.discountedPax, regularGuestPrice: s.regularGuestPrice ?? defaultPricing.regularGuestPrice, discountedGuestPrice: s.discountedGuestPrice ?? defaultPricing.discountedGuestPrice, packageTotal: s.packageTotal, initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) },
     orders: orders.map(({ reservedStock, requestId, ...o }) => o), ...billFor(state, s), menu: state.menu.filter(m => visibleOnMenu(state, m)).map(m => {
       const rule = stockRule(m); const inv = rule && state.inventory.find(i => i.id === rule.inventoryId);
-      return { ...m, available: m.available && (!rule || (inv && !inv.archived && inv.currentStock >= rule.amount)) };
+      return { ...m, priceMinimum: m.priceMinimum ?? 0, priceMaximum: m.priceMaximum ?? maxMenuPrice, available: m.available && (!rule || (inv && !inv.archived && inv.currentStock >= rule.amount)) };
     }) };
 }
 export function installDining(app) {
   installAuth(app);
   const managers = roles('cashier', 'owner');
+  const inventoryManagers = roles('owner');
   app.use('/api/dining', (req, res, next) => {
     if (['POST', 'PATCH'].includes(req.method) && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return res.status(400).json({ error: 'Provide a JSON object' });
     next();
   });
   app.get('/api/dining/state', staffOnly, (req, res) => {
     const state = read();
+    state.pricing = pricingFor(state);
     const activeSessions = new Set(state.sessions.filter(s => s.status !== 'closed').map(s => s.id));
-    state.sessions = state.sessions.map(({ tokens, ...s }) => ({ ...s, ...billFor(state, s), initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) }));
+    state.sessions = state.sessions.map(({ tokens, customerNameSetBy, ...s }) => ({ ...s, ...billFor(state, s), initialBatchApproved: Boolean(initialApprovalFor(state, s.id)) }));
     if (req.staff.role === 'kitchen') {
       state.sessions = []; state.transactions = []; state.inventory = []; state.inventoryMovements = []; state.menu = [];
       state.orders = state.orders.filter(o => kitchenStatuses.includes(o.status) && activeSessions.has(o.sessionId)).map(({ reservedStock, requestId, ...o }) => ({ ...o, totalAmount: 0, history: (o.history || []).map(({ status, at, actorRole, actorName }) => ({ status, at, actorRole, actorName })), items: o.items.map(i => ({ ...i, price: 0 })) }));
+    } else {
+      state.inventory = state.inventory.map(item => {
+        const image = menuForInventory(state, item)?.image;
+        return image ? { ...item, image } : item;
+      });
     }
     res.set('Cache-Control', 'no-store').json(state);
   });
+  app.patch('/api/dining/pricing', roles('owner'), (req, res) => res.json(mutate(state => {
+    if (Object.keys(req.body).length !== 2 || !Object.hasOwn(req.body, 'regularGuestPrice') || !Object.hasOwn(req.body, 'discountedGuestPrice')) fail('Provide regular and discounted guest prices.');
+    const regularGuestPrice = moneyNumber(req.body.regularGuestPrice, 'Regular guest price');
+    const discountedGuestPrice = moneyNumber(req.body.discountedGuestPrice, 'Discounted guest price');
+    if (discountedGuestPrice > regularGuestPrice) fail('Discounted guest price cannot exceed regular guest price.');
+    state.pricing = { regularGuestPrice, discountedGuestPrice };
+    return state.pricing;
+  })));
+  app.patch('/api/dining/menu/:id/pricing', roles('owner'), (req, res) => res.json(mutate(state => {
+    if (Object.keys(req.body).length !== 3 || !['price', 'priceMinimum', 'priceMaximum'].every(key => Object.hasOwn(req.body, key))) fail('Provide price, minimum price, and maximum price.');
+    const item = state.menu.find(menu => menu.id === req.params.id) || fail('Menu item not found', 404);
+    const price = moneyNumber(req.body.price, 'Menu price');
+    const priceMinimum = moneyNumber(req.body.priceMinimum, 'Minimum menu price');
+    const priceMaximum = moneyNumber(req.body.priceMaximum, 'Maximum menu price');
+    if (priceMinimum > priceMaximum) fail('Minimum menu price cannot exceed maximum menu price.');
+    if (price < priceMinimum || price > priceMaximum) fail('Menu price must be within the minimum and maximum.');
+    Object.assign(item, { price, priceMinimum, priceMaximum, priceUpdatedAt: new Date().toISOString(), priceUpdatedBy: req.staff.id });
+    return item;
+  })));
   app.get('/api/dining/tables/:id', (req, res) => {
     res.set('Cache-Control', 'no-store');
     const id = Number(req.params.id);
@@ -137,17 +213,30 @@ export function installDining(app) {
     if (!table) fail('Choose an existing table');
     if (table.hidden) fail('This table is hidden. Show the table before opening a visit.', 409);
     if (state.sessions.some(s => s.tableNumber === tableNumber && s.status !== 'closed')) fail('This table already has an active visit', 409);
-    if (![regularPax, discountedPax].every(n => Number.isInteger(n) && n >= 0) || regularPax + discountedPax < 1 || regularPax + discountedPax > 50) fail('Enter 1–50 guests');
+    const customerName = textField(req.body.customerName, 'customer name', 100);
+    if (![regularPax, discountedPax].every(n => Number.isInteger(n) && n >= 0) || regularPax + discountedPax < 2 || regularPax + discountedPax > 50) fail('Enter 2–50 guests');
     let code; do { code = String(randomInt(100000, 1000000)); } while (state.sessions.some(s => s.tableNumber === tableNumber && s.code === code));
-    const s = { id: randomUUID(), tableNumber, regularPax, discountedPax, packageTotal: regularPax * 220 + discountedPax * 195, code, tokens: [], status: 'open', openedAt: new Date().toISOString() };
-    state.sessions.push(s); table.status = 'occupied'; audit(req, s.id, 'session_opened', { tableNumber, regularPax, discountedPax, packageTotal: s.packageTotal }); return s;
+    const prices = pricingFor(state);
+    const s = { id: randomUUID(), tableNumber, customerName, customerNameSetBy: req.staff.id, regularPax, discountedPax, regularGuestPrice: prices.regularGuestPrice, discountedGuestPrice: prices.discountedGuestPrice, packageTotal: regularPax * prices.regularGuestPrice + discountedPax * prices.discountedGuestPrice, code, tokens: [], status: 'open', openedAt: new Date().toISOString() };
+    state.sessions.push(s); table.status = 'occupied'; audit(req, s.id, 'session_opened', { tableNumber, customerName, regularPax, discountedPax, packageTotal: s.packageTotal }); return s;
   })));
   app.post('/api/dining/join', limitAttempts, (req, res) => res.json(mutate(state => {
     const tableNumber = Number(req.body.tableNumber);
     const table = state.tables.find(t => t.id === tableNumber && !t.hidden);
     const s = table && state.sessions.find(s => s.tableNumber === tableNumber && s.status !== 'closed');
     if (!s || s.code !== String(req.body.code)) fail('No active visit with this code. Ask your server.', 401);
+    const customerName = textField(req.body.customerName, 'customer name', 100);
+    if (req.body.customerName !== customerName || s.customerName !== customerName) fail('Enter the exact customer name registered by the cashier.');
     const token = randomUUID(); s.tokens.push(token); return { id: s.id, token };
+  })));
+  app.patch('/api/dining/visits/:id/customer-name', managers, (req, res) => res.json(mutate(state => {
+    if (Object.keys(req.body).length !== 1 || !Object.hasOwn(req.body, 'customerName')) fail('Provide a customer name.');
+    const visit = session(state, req.params.id);
+    if (visit.customerName || visit.tokens.length) fail('The customer name can only be set before a customer joins.');
+    visit.customerName = textField(req.body.customerName, 'customer name', 100);
+    visit.customerNameSetBy = req.staff.id;
+    audit(req, visit.id, 'customer_name_registered', { customerName: visit.customerName });
+    return visit;
   })));
   app.get('/api/dining/visits/:id', (req, res) => { const state = read(); res.json(view(state, customer(req, state))); });
   app.post('/api/dining/visits/:id/orders', (req, res) => res.json(mutate(state => {
@@ -193,6 +282,7 @@ export function installDining(app) {
   })));
   app.post('/api/dining/visits/:id/pay', managers, (req, res) => res.json(mutate(state => {
     const s = session(state, req.params.id); if (s.status === 'closed') return state.transactions.find(t => t.sessionId === s.id);
+    if (!s.customerName) fail('The customer must join and enter a billing name before payment can be recorded.', 409);
     if (s.status !== 'pending_payment') fail('Request the bill before taking payment');
     const bill = billFor(state, s);
     if (bill.blockers.length) fail('Cannot close: every batch must be approved, prepared and served, or cancelled before approval', 409);
@@ -201,7 +291,7 @@ export function installDining(app) {
     if (!['cash', 'online'].includes(paymentMethod)) fail('Select a payment method');
     if (paymentMethod === 'cash' && (!Number.isFinite(amountReceived) || amountReceived < total || Math.abs(Math.round(amountReceived * 100) - amountReceived * 100) > 0.000001)) fail('Enter a valid cash amount at least equal to the bill');
     if (paymentMethod === 'online' && (typeof reference !== 'string' || reference.trim().length < 5 || reference.length > 200)) fail('Enter a verified payment reference (5–200 characters)');
-    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.username, timestamp: new Date().toISOString() };
+    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, customerName: s.customerName || '', totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.username, timestamp: new Date().toISOString() };
     txn.change = Number(txn.change.toFixed(2));
     state.transactions.unshift(txn); s.status = 'closed'; s.closedAt = txn.timestamp;
     audit(req, s.id, 'payment_confirmed', txn); audit(req, s.id, 'session_closed', { transactionId: txn.id, total });
@@ -269,9 +359,13 @@ export function installDining(app) {
     if (typeof req.body.status !== 'string' || next[order.status] !== req.body.status) fail('Invalid order status transition', 409);
     recordStatus(req, order, req.body.status); return order;
   })));
-  app.post('/api/dining/inventory', managers, (req, res) => res.status(201).json(mutate(state => {
+  app.post('/api/dining/inventory', inventoryManagers, async (req, res) => {
+    let storedImage;
+    try {
+      if (Object.hasOwn(req.body, 'imageData')) storedImage = await storeMenuImage(req.body.imageData);
+      const result = mutate(state => {
     const allowed = ['name', 'category', 'price', 'description', 'unit', 'currentStock', 'lowStockThreshold', 'stockPerOrder', 'hiddenFromMenu'];
-    if (Object.keys(req.body).some(key => !allowed.includes(key))) fail('Unknown product field');
+    if (Object.keys(req.body).some(key => !allowed.includes(key) && key !== 'imageData')) fail('Unknown product field');
     const name = textField(req.body.name, 'product name', 100);
     const category = textField(req.body.category, 'category', 60);
     const unit = textField(req.body.unit, 'stock unit', 30);
@@ -285,13 +379,19 @@ export function installDining(app) {
     const lowStockThreshold = stockNumber(req.body.lowStockThreshold, 'Low stock threshold');
     const stockPerOrder = stockNumber(req.body.stockPerOrder, 'Stock used per order', 0.0001);
     const now = new Date().toISOString();
-    const inventory = { id: `inv-${randomUUID()}`, name, currentStock, unit, lowStockThreshold, lastUpdated: now, hiddenFromMenu, createdAt: now, createdBy: req.staff.id, createdByName: req.staff.username };
-    const menu = { id: `product-${randomUUID()}`, name, category, price, description: description.trim(), available: true, inventoryId: inventory.id, stockPerOrder };
+    const inventory = { id: `inv-${randomUUID()}`, name, currentStock, unit, lowStockThreshold, lastUpdated: now, hiddenFromMenu, ...(storedImage ? { image: storedImage.url } : {}), createdAt: now, createdBy: req.staff.id, createdByName: req.staff.username };
+    const menu = { id: `product-${randomUUID()}`, name, category, price, priceMinimum: 0, priceMaximum: maxMenuPrice, description: description.trim(), available: true, inventoryId: inventory.id, stockPerOrder, ...(storedImage ? { image: storedImage.url } : {}) };
     state.inventory.push(inventory); state.menu.push(menu);
     if (currentStock) state.inventoryMovements.unshift({ id: randomUUID(), itemId: inventory.id, itemName: name, type: 'restock', quantity: currentStock, unit, reason: 'Opening stock for new product', timestamp: now, actorId: req.staff.id, actorName: req.staff.username });
     return { inventory, menu };
-  })));
-  app.patch('/api/dining/inventory/:id', managers, (req, res) => res.json(mutate(state => {
+      });
+      res.status(201).json(result);
+    } catch (error) {
+      if (storedImage) await unlink(storedImage.filePath);
+      throw error;
+    }
+  });
+  app.patch('/api/dining/inventory/:id', inventoryManagers, (req, res) => res.json(mutate(state => {
     const item = state.inventory.find(i => i.id === req.params.id) || fail('Item not found', 404);
     if (Object.keys(req.body).some(key => !['currentStock', 'archived', 'hiddenFromMenu'].includes(key))) fail('Unknown inventory field');
     if ('currentStock' in req.body) {
@@ -308,4 +408,22 @@ export function installDining(app) {
     }
     item.lastUpdated = new Date().toISOString(); return item;
   })));
+  app.put('/api/dining/inventory/:id/image', roles('cashier', 'owner'), async (req, res) => {
+    if (Object.keys(req.body || {}).length !== 1 || !Object.hasOwn(req.body, 'imageData')) fail('Provide a food photo to upload.');
+    const storedImage = await storeMenuImage(req.body.imageData);
+    try {
+      const item = mutate(state => {
+        const inventoryItem = state.inventory.find(i => i.id === req.params.id) || fail('Item not found', 404);
+        const menuItem = menuForInventory(state, inventoryItem) || fail('No customer menu item is linked to this inventory item', 404);
+        inventoryItem.image = storedImage.url;
+        menuItem.image = storedImage.url;
+        inventoryItem.lastUpdated = new Date().toISOString();
+        return inventoryItem;
+      });
+      res.json(item);
+    } catch (error) {
+      await unlink(storedImage.filePath);
+      throw error;
+    }
+  });
 }

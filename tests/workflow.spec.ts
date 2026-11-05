@@ -7,15 +7,16 @@ async function login(page, role: string) {
 }
 test('cashier approves the first batch once, follow-ups reach kitchen directly, and closure requires service', async ({ browser }) => {
   test.setTimeout(90000);
-  const contexts = await Promise.all(Array.from({length:4}, () => browser.newContext()));
-  const [staff,kitchen,phoneA,phoneB] = contexts; const errors: string[] = [];
+  const contexts = await Promise.all(Array.from({length:5}, () => browser.newContext()));
+  const [staff,kitchen,phoneA,phoneB,salesContext] = contexts; const errors: string[] = [];
   for (const c of contexts) c.on('page', page => page.on('pageerror', e => errors.push(e.message)));
   try {
     const cashier = await staff.newPage(); await login(cashier,'cashier');
     const table = cashier.locator('article').filter({ has: cashier.getByRole('heading', { name: 'Table 1', exact: true }) });
+    await table.getByLabel('Customer name for Table 1', { exact: true }).fill('Workflow Group');
     await table.getByRole('button', { name: 'Open dining session' }).click();
     await expect(table.getByText('Visit code:')).toBeVisible(); const code = (await table.locator('strong.success').innerText()).trim();
-    for (const context of [phoneA,phoneB]) { const page = await context.newPage(); await page.goto('/customer/1'); await page.getByLabel('Visit code').fill(code); await page.getByRole('button', { name: 'Open menu' }).click(); await expect(page.getByRole('button', { name: 'Table orders & bill' })).toBeVisible(); }
+    for (const context of [phoneA,phoneB]) { const page = await context.newPage(); await page.goto('/customer/1'); await page.getByLabel('Exact customer name from cashier', { exact: true }).fill('Workflow Group'); await page.getByLabel('Visit code').fill(code); await page.getByRole('button', { name: 'Open menu' }).click(); await expect(page.getByRole('button', { name: 'Table orders & bill' })).toBeVisible(); }
     const a=phoneA.pages()[0], b=phoneB.pages()[0];
     async function submit(page, item: string, notes: string) {
       const before = (await (await staff.request.get('/api/dining/state')).json()).orders.length;
@@ -52,7 +53,7 @@ test('cashier approves the first batch once, follow-ups reach kitchen directly, 
     await a.getByRole('button', { name:'Finish ordering & request bill' }).click();
     await expect(table.getByText('Bill requested', {exact:true})).toBeVisible();
     await expect(table.getByRole('button', { name:'Confirm payment & close visit' })).toBeDisabled();
-    const blocked=await staff.request.post(`/api/dining/visits/${first.sessionId}/pay`, {data:{paymentMethod:'cash',amountReceived:300,expectedTotal:290}}); expect(blocked.status()).toBe(409);
+    const blocked=await staff.request.post(`/api/dining/visits/${first.sessionId}/pay`, {data:{paymentMethod:'cash',amountReceived:520,expectedTotal:510}}); expect(blocked.status()).toBe(409);
     const secondReview=table.locator(`[data-batch-id="${second.id}"]`);
     await expect(secondReview.getByText('Sent directly to kitchen · Read-only record', { exact: true })).toBeVisible();
     await expect(secondReview.getByRole('button')).toHaveCount(0);
@@ -66,16 +67,19 @@ test('cashier approves the first batch once, follow-ups reach kitchen directly, 
     await expect(secondReview.getByRole('button')).toHaveCount(0);
     await secondKitchen.getByRole('button', { name:/Confirm Served/ }).click();
     await expect(table.getByRole('button', { name:'Confirm payment & close visit' })).toBeEnabled();
-    await table.getByLabel('Cash received').fill('300'); await table.getByRole('button', { name:'Confirm payment & close visit' }).click();
+    await table.getByLabel('Cash received').fill('520'); await table.getByRole('button', { name:'Confirm payment & close visit' }).click();
     await expect(a.getByRole('heading', { name:'Thank you for dining with us' })).toBeVisible();
     const state=await (await staff.request.get('/api/dining/state')).json();
     expect(state.orders.filter(o => o.sessionId === first.sessionId).map(o => o.status)).toEqual(['served','served']);
-    expect(state.transactions.find(t => t.sessionId === first.sessionId).totalBill).toBe(290);
+    expect(state.transactions.find(t => t.sessionId === first.sessionId).totalBill).toBe(510);
+    expect(state.transactions.find(t => t.sessionId === first.sessionId).customerName).toBe('Workflow Group');
+    const salesPage = await salesContext.newPage(); await login(salesPage, 'owner'); await salesPage.goto('/owner/sales');
+    await expect(salesPage.getByRole('cell', { name: 'Workflow Group', exact: true })).toBeVisible();
     const audit=await (await staff.request.get(`/api/dining/visits/${first.sessionId}/audit`)).json(); expect(audit.filter(e=>e.event_type==='batch_approved')).toHaveLength(2);
     expect(audit.filter(e=>e.event_type==='batch_approved' && e.actor_role==='cashier')).toHaveLength(1);
     expect(audit.filter(e=>e.event_type==='batch_approved' && e.actor_role==='system')).toHaveLength(1);
-    await table.getByRole('button', { name:'Open dining session' }).click(); const nextCode=(await table.locator('strong.success').innerText()).trim(); expect(nextCode).not.toBe(code);
-    await a.getByRole('button', { name:'Join a new visit' }).click(); await a.getByLabel('Visit code').fill(nextCode); await a.getByRole('button', { name:'Open menu' }).click();
+    await table.getByLabel('Customer name for Table 1', { exact: true }).fill('Next Visit Guest'); await table.getByRole('button', { name:'Open dining session' }).click(); const nextCode=(await table.locator('strong.success').innerText()).trim(); expect(nextCode).not.toBe(code);
+    await a.getByRole('button', { name:'Join a new visit' }).click(); await a.getByLabel('Exact customer name from cashier', { exact: true }).fill('Next Visit Guest'); await a.getByLabel('Visit code').fill(nextCode); await a.getByRole('button', { name:'Open menu' }).click();
     await a.getByRole('button', { name:'Table orders & bill' }).click(); await expect(a.getByText('No orders yet.', {exact:true})).toBeVisible();
     expect(errors).toEqual([]);
   } finally { await Promise.all(contexts.map(c=>c.close())); }
@@ -86,8 +90,8 @@ test('cashier review can cancel an unapproved batch with a recorded reason', asy
   try {
     const cashier=await staff.newPage(); await login(cashier,'cashier');
     const table=cashier.locator('article').filter({has:cashier.getByRole('heading',{name:'Table 3',exact:true})});
-    await table.getByRole('button',{name:'Open dining session'}).click(); const code=(await table.locator('strong.success').innerText()).trim();
-    const customer=await phone.newPage(); await customer.goto('/customer/3'); await customer.getByLabel('Visit code').fill(code); await customer.getByRole('button',{name:'Open menu'}).click();
+    await table.getByLabel('Customer name for Table 3', { exact: true }).fill('Cancel Test Guest'); await table.getByRole('button',{name:'Open dining session'}).click(); const code=(await table.locator('strong.success').innerText()).trim();
+    const customer=await phone.newPage(); await customer.goto('/customer/3'); await customer.getByLabel('Exact customer name from cashier', { exact: true }).fill('Cancel Test Guest'); await customer.getByLabel('Visit code').fill(code); await customer.getByRole('button',{name:'Open menu'}).click();
     await customer.getByRole('button',{name:'Add Coke to batch',exact:true}).click(); await customer.getByRole('button',{name:'Your cart (1)',exact:true}).click(); await customer.getByRole('button',{name:'Submit batch'}).click();
     await cashier.goto('/cashier/orders'); const batch=cashier.locator('.batch-card').filter({has:cashier.getByRole('heading',{name:'Table 3 · Batch 1',exact:true})});
     await batch.getByRole('button',{name:'Cancel batch',exact:true}).click(); await batch.getByLabel('Cancellation reason').fill('Customer changed their selection'); await batch.getByRole('button',{name:'Confirm cancellation'}).click();
@@ -101,11 +105,11 @@ test('two phones queue behind one initial approval and cashier follow-up records
   try {
     const cashier = await staff.newPage(); await login(cashier, 'cashier');
     const table = cashier.locator('.qr-print [data-table-id="4"]');
-    await table.getByRole('button', { name: 'Open dining session', exact: true }).click();
+    await table.getByLabel('Customer name for Table 4', { exact: true }).fill('Queue Test Guest'); await table.getByRole('button', { name: 'Open dining session', exact: true }).click();
     const code = (await table.locator('strong.success').innerText()).trim();
     async function queue(context, item: string) {
       const page = await context.newPage(); await page.goto('/customer/4');
-      await page.getByLabel('Visit code').fill(code); await page.getByRole('button', { name: 'Open menu', exact: true }).click();
+      await page.getByLabel('Exact customer name from cashier', { exact: true }).fill('Queue Test Guest'); await page.getByLabel('Visit code').fill(code); await page.getByRole('button', { name: 'Open menu', exact: true }).click();
       const card = page.locator('article').filter({ has: page.getByRole('heading', { name: item, exact: true }) });
       await card.getByRole('button', { name: `Add ${item} to batch`, exact: true }).click();
       if (item === 'Rice') await card.screenshot({ path: 'test-results/customer-add-to-batch.png' });

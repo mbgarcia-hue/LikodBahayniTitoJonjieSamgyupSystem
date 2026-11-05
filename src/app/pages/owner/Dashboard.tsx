@@ -63,6 +63,7 @@ export default function OwnerDashboard() {
               <tr>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Transaction ID</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Table</th>
+                <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Customer</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Amount</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Method</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Time</th>
@@ -71,13 +72,14 @@ export default function OwnerDashboard() {
             <tbody className="divide-y divide-amber-600/20">
               {recentTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-6 py-8 text-center text-amber-500/50 text-sm">No transactions recorded yet</td>
+                  <td colSpan={6} className="px-6 py-8 text-center text-amber-500/50 text-sm">No transactions recorded yet</td>
                 </tr>
               )}
               {recentTransactions.map((t) => (
                 <tr key={t.id} className="hover:bg-amber-600/10 transition-colors">
                   <td className="px-6 py-3 text-sm text-amber-400/70">{t.id}</td>
                   <td className="px-6 py-3 font-medium text-amber-200">Table {t.tableNumber}</td>
+                  <td className="px-6 py-3 text-amber-200">{t.customerName || '—'}</td>
                   <td className="px-6 py-3 font-semibold text-amber-400">₱{t.totalBill.toLocaleString()}</td>
                   <td className="px-6 py-3">
                     <span className={`inline-block rounded-full px-3 py-1 text-xs font-medium border ${

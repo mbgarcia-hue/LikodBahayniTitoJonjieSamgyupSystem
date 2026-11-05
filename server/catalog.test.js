@@ -6,13 +6,14 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
-test('cashier product creation, stock links and customer menu visibility', async t => {
+test('owner-managed products, stock links and customer menu visibility', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'restaurant-catalog-'));
   process.env.DATABASE_PATH = join(directory, 'catalog.sqlite');
+  process.env.MENU_IMAGE_DIR = join(directory, 'menu-images');
   for (const role of ['cashier', 'owner', 'kitchen']) process.env[`${role.toUpperCase()}_PASSWORD`] = 'CatalogTest@123';
   const { installDining } = await import('./dining.js');
   const { default: db } = await import('./database.js');
-  const app = express(); app.use(express.json()); installDining(app);
+  const app = express(); app.use(express.json({ limit: '5mb' })); installDining(app);
   app.use((error, _req, res, _next) => res.status(error.status || 500).json({ error: error.message }));
   const server = app.listen(0, '127.0.0.1'); await new Promise(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${server.address().port}/api`;
@@ -24,31 +25,49 @@ test('cashier product creation, stock links and customer menu visibility', async
   let cashier, kitchen, owner, product, batch;
   const phones = [];
   const state = async () => (await call('/dining/state', undefined, cashier)).data;
-  const patch = (id, body, cookie = cashier) => call(`/dining/inventory/${id}`, body, cookie, '', 'PATCH');
+  const patch = (id, body, cookie = owner) => call(`/dining/inventory/${id}`, body, cookie, '', 'PATCH');
   const menuFor = async phone => (await call(`/dining/visits/${phone.id}`, undefined, '', phone.token)).data;
   const submit = (items, requestId) => call(`/dining/visits/${phones[0].id}/orders`, { items, requestId }, '', phones[0].token);
   try {
     cashier = (await call('/staff/login', { username: 'cashier', password: 'CatalogTest@123', role: 'cashier' })).cookie;
     owner = (await call('/staff/login', { username: 'owner', password: 'CatalogTest@123', role: 'owner' })).cookie;
     kitchen = (await call('/staff/login', { username: 'kitchen', password: 'CatalogTest@123', role: 'kitchen' })).cookie;
-    await t.test('creation and hiding require cashier or owner access', async () => {
+    await t.test('creation and hiding require owner access', async () => {
       assert.equal((await call('/dining/inventory', payload)).status, 401);
+      assert.equal((await call('/dining/inventory', payload, cashier)).status, 403);
       assert.equal((await call('/dining/inventory', payload, kitchen)).status, 403);
       assert.equal((await patch('inv-13', { hiddenFromMenu: true }, kitchen)).status, 403);
+      assert.equal((await patch('inv-13', { hiddenFromMenu: true }, cashier)).status, 403);
       assert.equal((await patch('inv-13', { hiddenFromMenu: true }, '')).status, 401);
-      const created = await call('/dining/inventory', { ...payload, name: 'Owner hidden product', hiddenFromMenu: true, currentStock: 0 }, owner);
+      const { default: sharp } = await import('sharp');
+      const photo = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#c76b32' } }).png().toBuffer();
+      const imageData = `data:image/png;base64,${photo.toString('base64')}`;
+      const created = await call('/dining/inventory', { ...payload, name: 'Owner hidden product', hiddenFromMenu: true, currentStock: 0, imageData }, owner);
       assert.equal(created.status, 201);
       assert.equal(created.data.inventory.hiddenFromMenu, true);
+      assert.match(created.data.menu.image, /^\/uploads\/menu\/[0-9a-f-]+\.webp$/);
+      assert.equal((await call('/dining/inventory', { ...payload, name: 'Cashier cannot add photo product', imageData }, cashier)).status, 403);
+      const existing = await patch('inv-7', { imageData }, cashier);
+      assert.equal(existing.status, 403);
+      const uploaded = await call('/dining/inventory/inv-7/image', { imageData }, cashier, '', 'PUT');
+      assert.equal(uploaded.status, 200);
+      assert.match(uploaded.data.image, /^\/uploads\/menu\/[0-9a-f-]+\.webp$/);
+      const stateAfterUpload = await state();
+      assert.equal(stateAfterUpload.inventory.find(i => i.id === 'inv-7').image, uploaded.data.image);
+      assert.equal((await patch('inv-7', { currentStock: 20 }, cashier)).status, 403);
+      assert.equal((await call('/dining/inventory/inv-7/image', { imageData: 'data:image/png;base64,not-an-image' }, owner, '', 'PUT')).status, 400);
+      assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, cashier, '', 'PATCH')).status, 403);
+      assert.equal((await call('/dining/menu/add-1/pricing', { price: 40, priceMinimum: 30, priceMaximum: 50 }, cashier, '', 'PATCH')).status, 403);
     });
     await t.test('invalid and duplicate products leave database state unchanged', async () => {
       const before = await state();
       const invalid = [{ name: '' }, { name: 'x'.repeat(101) }, { category: '' }, { unit: '' }, { price: -1 }, { price: 1.001 }, { price: '35' }, { currentStock: -1 }, { currentStock: null }, { currentStock: 0.00001 }, { stockPerOrder: 0 }, { stockPerOrder: -1 }, { stockPerOrder: 0.00001 }, { lowStockThreshold: -1 }, { hiddenFromMenu: 'yes' }, { description: 'x'.repeat(1001) }, { id: 'overwrite' }];
-      for (const fields of invalid) assert.equal((await call('/dining/inventory', { ...payload, ...fields }, cashier)).status, 400, JSON.stringify(fields));
-      assert.equal((await call('/dining/inventory', { ...payload, name: ' coke ' }, cashier)).status, 409);
+      for (const fields of invalid) assert.equal((await call('/dining/inventory', { ...payload, ...fields }, owner)).status, 400, JSON.stringify(fields));
+      assert.equal((await call('/dining/inventory', { ...payload, name: ' coke ' }, owner)).status, 409);
       assert.deepEqual(await state(), before);
     });
     await t.test('atomic creation saves one product, menu entry and attributed opening stock', async () => {
-      const results = await Promise.all([1, 2].map(() => call('/dining/inventory', payload, cashier)));
+      const results = await Promise.all([1, 2].map(() => call('/dining/inventory', payload, owner)));
       assert.deepEqual(results.map(r => r.status).sort(), [201, 409]);
       product = results.find(r => r.status === 201).data;
       assert.equal(product.menu.inventoryId, product.inventory.id);
@@ -57,10 +76,10 @@ test('cashier product creation, stock links and customer menu visibility', async
       assert.equal(current.inventory.filter(i => i.name === payload.name).length, 1);
       assert.equal(current.menu.filter(i => i.name === payload.name).length, 1);
       const movement = current.inventoryMovements.find(m => m.itemId === product.inventory.id);
-      assert.equal(movement.quantity, 3.5); assert.equal(movement.actorName, 'cashier');
+      assert.equal(movement.quantity, 3.5); assert.equal(movement.actorName, 'owner');
       for (let tableNumber = 1; tableNumber <= 10; tableNumber++) {
-        const visit = (await call('/dining/open', { tableNumber, regularPax: 1, discountedPax: 0 }, cashier)).data;
-        const phone = (await call('/dining/join', { tableNumber, code: visit.code })).data;
+        const visit = (await call('/dining/open', { tableNumber, customerName: 'Catalog Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+        const phone = (await call('/dining/join', { tableNumber, code: visit.code, customerName: 'Catalog Guest' })).data;
         phones.push(phone);
         assert.ok((await menuFor(phone)).menu.some(m => m.id === product.menu.id));
         assert.ok(!(await menuFor(phone)).menu.some(m => m.name === 'Owner hidden product'));
@@ -91,7 +110,7 @@ test('cashier product creation, stock links and customer menu visibility', async
       assert.deepEqual(current.orders, before.orders);
       assert.equal(current.inventory.find(i => i.id === product.inventory.id).currentStock, 3);
       const view = await menuFor(phones[0]);
-      assert.equal(view.orders[0].items[0].name, payload.name); assert.equal(view.total, 319);
+      assert.equal(view.orders[0].items[0].name, payload.name); assert.equal(view.total, 539);
       assert.equal((await call(`/dining/orders/${batch.id}/approve`, { expectedTotal: 99 }, cashier)).status, 200);
     });
     await t.test('product links and hidden state survive another server process', () => {
@@ -120,10 +139,26 @@ test('cashier product creation, stock links and customer menu visibility', async
       await patch(product.inventory.id, { archived: false, currentStock: 0 });
       assert.equal((await menuFor(phones[0])).menu.find(m => m.id === product.menu.id).available, false);
       assert.equal((await submit([{ menuItemId: product.menu.id, quantity: 1 }], 'out-of-stock')).status, 409);
-      assert.equal((await call('/dining/inventory', { ...payload, name: ' calAMansi   Juice ' }, cashier)).status, 409);
-      const fractional = await call('/dining/inventory', { ...payload, name: 'Cent price product', price: 0.1, stockPerOrder: 1 }, cashier);
+      assert.equal((await call('/dining/inventory', { ...payload, name: ' calAMAnsi   Juice ' }, owner)).status, 409);
+      const fractional = await call('/dining/inventory', { ...payload, name: 'Cent price product', price: 0.1, stockPerOrder: 1 }, owner);
       const centsOrder = await submit([{ menuItemId: fractional.data.menu.id, quantity: 3 }], 'cents-price');
       assert.equal(centsOrder.status, 200); assert.equal(centsOrder.data.totalAmount, 0.3);
+    });
+    await t.test('only owners change package rates and menu item prices stay inside saved bounds', async () => {
+      assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, owner, '', 'PATCH')).status, 200);
+      assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 300 }, owner, '', 'PATCH')).status, 400);
+      assert.equal((await call('/dining/menu/add-1/pricing', { price: 45, priceMinimum: 40, priceMaximum: 50 }, owner, '', 'PATCH')).status, 200);
+      assert.equal((await call('/dining/menu/add-1/pricing', { price: 39, priceMinimum: 40, priceMaximum: 50 }, owner, '', 'PATCH')).status, 400);
+      assert.equal((await call('/dining/menu/add-1/pricing', { price: 45, priceMinimum: 51, priceMaximum: 50 }, owner, '', 'PATCH')).status, 400);
+      const table = (await call('/dining/tables', {}, owner)).data;
+      const visit = (await call('/dining/open', { tableNumber: table.id, customerName: 'Pricing Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+      assert.equal(visit.packageTotal, 500);
+      const phone = (await call('/dining/join', { tableNumber: table.id, code: visit.code, customerName: 'Pricing Guest' })).data;
+      const order = await call(`/dining/visits/${visit.id}/orders`, { requestId: 'owner-menu-price', items: [{ menuItemId: 'add-1', quantity: 1 }] }, '', phone.token);
+      assert.equal(order.data.totalAmount, 45);
+      const stateAfter = await state();
+      assert.equal(stateAfter.sessions.find(session => session.id === visit.id).packageTotal, 500);
+      assert.equal(stateAfter.menu.find(item => item.id === 'add-1').price, 45);
     });
   } finally {
     await new Promise(resolve => server.close(resolve)); db.close(); rmSync(directory, { recursive: true, force: true });

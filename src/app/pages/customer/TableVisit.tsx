@@ -4,9 +4,10 @@ import { useParams, useLocation, useNavigate } from 'react-router';
 import { api } from '../../lib/api';
 import type { MenuItem, Order } from '../../data/restaurantData';
 import { statusLabel } from '../../lib/orderStatus';
+import { fallbackFoodImage, menuImage } from '../../lib/menuImages';
 
 type Access = { id: string; token: string };
-type Visit = { session: { id: string; tableNumber: number; status: string; regularPax: number; discountedPax: number; packageTotal: number; initialBatchApproved: boolean }; orders: Order[]; total: number; additionalTotal: number; discountAmount: number; discountReason: string; blockers: {id: string; batchNumber: number; status: string}[]; menu: MenuItem[] };
+type Visit = { session: { id: string; tableNumber: number; customerName?: string; status: string; regularPax: number; discountedPax: number; regularGuestPrice: number; discountedGuestPrice: number; packageTotal: number; initialBatchApproved: boolean }; orders: Order[]; total: number; additionalTotal: number; discountAmount: number; discountReason: string; blockers: {id: string; batchNumber: number; status: string}[]; menu: MenuItem[] };
 function saved<T>(key: string, fallback: T): T { try { return JSON.parse(localStorage.getItem(key) || 'null') ?? fallback; } catch { return fallback; } }
 const money = (n: number) => `₱${n.toLocaleString()}`;
 export default function TableVisit() {
@@ -14,7 +15,7 @@ export default function TableVisit() {
   const tableNumber = Number(tableId); const key = `visit-${tableId}`;
   const [access, setAccess] = useState<Access | null>(() => saved(key, null));
   const [visit, setVisit] = useState<Visit | null>(null);
-  const [code, setCode] = useState(''); const [error, setError] = useState(''); const [connectionError, setConnectionError] = useState(''); const [busy, setBusy] = useState(false);
+  const [code, setCode] = useState(''); const [customerName, setCustomerName] = useState(''); const [error, setError] = useState(''); const [connectionError, setConnectionError] = useState(''); const [busy, setBusy] = useState(false);
   const [cart, setCart] = useState<Record<string, number>>({}); const [notes, setNotes] = useState('');
   const [category, setCategory] = useState('All');
   const [tableCheck, setTableCheck] = useState({ status: 'loading', message: '' });
@@ -52,6 +53,9 @@ export default function TableVisit() {
     refresh(); const timer = setInterval(refresh, 3000); return () => { active = false; clearInterval(timer); };
   }, [access]);
   useEffect(() => {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }, [location.pathname]);
+  useEffect(() => {
     if (visit && category !== 'All' && !visit.menu.some(m => m.category === category)) setCategory('All');
   }, [visit?.menu, category]);
   useEffect(() => {
@@ -65,7 +69,7 @@ export default function TableVisit() {
   }, [visit?.menu, cart, busy]);
   async function join(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError('');
-    try { const next = await api('/dining/join', { tableNumber, code }); localStorage.setItem(key, JSON.stringify(next)); setAccess(next); navigate(`/customer/${tableId}/menu`); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+    try { const next = await api('/dining/join', { tableNumber, code, customerName }); localStorage.setItem(key, JSON.stringify(next)); setAccess(next); navigate(`/customer/${tableId}/menu`); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   function edit(id: string, delta: number) { if (busy) return; requestId.current = newRequestId(); setCart(prev => ({ ...prev, [id]: Math.max(0, Math.min(100, (prev[id] || 0) + delta)) })); }
   async function submit() {
@@ -86,21 +90,36 @@ export default function TableVisit() {
   const cartTotal = selected.reduce((n, m) => n + m.price * cart[m.id], 0);
   const activeCategory = visit?.menu.some(m => m.category === category) ? category : 'All';
   return <main className="dining customer-dining">
-    <header><p className="eyebrow">Likod Bahay ni Tito Jonjie</p><h1>Table {tableNumber}</h1><p>Unlimited samgyupsal · Order together, enjoy together</p></header>
+    <div className="customer-sticky">
+      <header className="customer-brand"><p className="eyebrow">Likod Bahay ni Tito Jonjie</p><h1>Table {tableNumber}</h1><p>Unlimited samgyupsal · Order together, enjoy together</p></header>
+      {access && visit && visit.session.status !== 'closed' && <nav className="dining-tabs customer-nav" aria-label="Your table">
+        {['menu', 'cart', 'bill'].map(s => <button key={s} className={stage === s ? 'active' : 'secondary'} aria-current={stage === s ? 'page' : undefined} onClick={() => navigate(`/customer/${tableId}/${s}`)}>{s === 'menu' ? 'Menu' : s === 'cart' ? `Your cart (${Object.values(cart).reduce((n, q) => n + q, 0)})` : 'Table orders & bill'}</button>)}
+      </nav>}
+    </div>
     {error && <p className="notice error" role="alert">{error}</p>}
     {connectionError && <p className="notice error" role="alert">{connectionError}</p>}
     {!access && tableCheck.status !== 'ready' ? <section className="dining-card"><h2>{tableCheck.status === 'loading' ? 'Checking your table…' : tableCheck.status === 'unavailable' ? 'Table unavailable' : 'Unable to check this table'}</h2><p role="status">{tableCheck.status === 'loading' ? 'Please wait while we check your QR link.' : tableCheck.message}</p>{tableCheck.status !== 'loading' && <button onClick={() => setTableRetry(n => n + 1)}>Try again</button>}</section>
-    : !access ? <form onSubmit={join} className="dining-card"><h2>Join your table</h2><p>Ask your server for this visit’s six-digit code. Everyone at your table can join the same visit.</p><label>Visit code<input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoComplete="off" /></label><button disabled={busy}>{busy ? 'Joining…' : 'Open menu'}</button></form>
+    : !access ? <form onSubmit={join} className="dining-card"><h2>Join your table</h2><p>Ask your cashier for the exact billing name and six-digit visit code. Both must match before you can enter the menu.</p><label>Exact customer name from cashier<input value={customerName} onChange={e => setCustomerName(e.target.value)} maxLength={100} required autoComplete="name" /></label><label>Visit code<input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" pattern="[0-9]{6}" maxLength={6} required autoComplete="off" /></label><button disabled={busy}>{busy ? 'Joining…' : 'Open menu'}</button></form>
     : !visit ? <section className="dining-card"><p>Loading your table…</p><button onClick={() => { localStorage.removeItem(key); setAccess(null); }}>Enter visit code again</button></section>
     : visit.session.status === 'closed' ? <section className="dining-card"><h2>Thank you for dining with us</h2><p>This visit is paid and closed. Total: {money(visit.total)}</p><button onClick={() => { localStorage.removeItem(key); localStorage.removeItem(`draft-${access.id}`); setAccess(null); setVisit(null); }}>Join a new visit</button></section>
     : <>
-      <nav className="dining-tabs">{['menu', 'cart', 'bill'].map(s => <button key={s} className={stage === s ? 'active' : 'secondary'} onClick={() => navigate(`/customer/${tableId}/${s}`)}>{s === 'menu' ? 'Menu' : s === 'cart' ? `Your cart (${Object.values(cart).reduce((n, q) => n + q, 0)})` : 'Table orders & bill'}</button>)}</nav>
-      <p className="notice">{visit.session.regularPax + visit.session.discountedPax} guests · Package {money(visit.session.packageTotal)} charged once per visit. Your draft cart is private; submitted orders are shared.</p>
+      <p className="notice">Billing name: <strong>{visit.session.customerName || 'Not provided'}</strong> · {visit.session.regularPax + visit.session.discountedPax} guests · Package {money(visit.session.packageTotal)} charged once per visit. Your draft cart is private; submitted orders are shared.</p>
       <p className="notice">{visit.session.initialBatchApproved ? 'Your first batch is approved. New batches go directly to the kitchen.' : 'The cashier approves your table’s first batch. Additional batches wait for that approval, then go directly to the kitchen.'}</p>
       {visit.session.status !== 'open' && <p className="notice">Bill requested. Ordering is paused. Please pay the cashier or ask staff to reopen ordering.</p>}
-      {stage === 'menu' && <><p>Add items to your batch, then adjust quantities and submit from Your cart.</p><div className="dining-tabs">{['All', ...new Set(visit.menu.map(m => m.category))].map(c => <button className="secondary" key={c} onClick={() => setCategory(c)}>{c}</button>)}</div><div className="dining-grid">{visit.menu.filter(m => activeCategory === 'All' || m.category === activeCategory).map(m => <article className="dining-card" key={m.id}><span className="eyebrow">{m.category}</span><h2>{m.name}</h2><p>{m.description}</p><strong>{m.price ? money(m.price) : 'Included in package'}</strong><div className="quantity"><button aria-label={`Add ${m.name} to batch`} disabled={busy || !m.available || visit.session.status !== 'open' || (cart[m.id] || 0) >= 100} onClick={() => edit(m.id, 1)}>Add to Batch</button></div>{cart[m.id] > 0 && <p role="status">In your cart: {cart[m.id]}</p>}{!m.available && <p className="error">Currently unavailable</p>}</article>)}</div></>}
+      {stage === 'menu' && <><p>Add items to your batch, then adjust quantities and submit from Your cart.</p><div className="dining-tabs menu-categories">{['All', ...new Set(visit.menu.map(m => m.category))].map(c => <button className={activeCategory === c ? 'active' : 'secondary'} key={c} aria-pressed={activeCategory === c} onClick={() => setCategory(c)}>{c}</button>)}</div><div className="dining-grid menu-grid">{visit.menu.filter(m => activeCategory === 'All' || m.category === activeCategory).map(m => <article className="dining-card menu-card" key={m.id}>
+        <div className="menu-card-photo">
+          <img src={menuImage(m)} alt={m.name} loading="lazy" decoding="async" onError={event => { event.currentTarget.src = fallbackFoodImage; }} />
+          <span className={`menu-availability ${m.available ? 'is-available' : 'is-unavailable'}`}>{m.available ? 'Available' : 'Out of stock'}</span>
+        </div>
+        <div className="menu-card-content">
+          <span className="eyebrow">{m.category}</span><h2>{m.name}</h2><p className="menu-description">{m.description || 'Freshly prepared and ready to enjoy.'}</p>
+          <div className="menu-card-footer"><strong>{m.price ? money(m.price) : 'Included in package'}</strong><button aria-label={`Add ${m.name} to batch`} disabled={busy || !m.available || visit.session.status !== 'open' || (cart[m.id] || 0) >= 100} onClick={() => edit(m.id, 1)}>Add to Batch</button></div>
+          {cart[m.id] > 0 && <p role="status" className="menu-cart-count">In your cart: {cart[m.id]}</p>}
+          {!m.available && <p className="error">Currently unavailable</p>}
+        </div>
+      </article>)}</div></>}
       {stage === 'cart' && <section className="dining-card"><h2>Review your batch</h2>{!selected.length && <p>Your cart is empty. Choose items from the menu.</p>}{selected.map(m => <div className="bill-line" key={m.id}><span>{m.name} × {cart[m.id]}</span><span>{money(m.price * cart[m.id])}</span><button aria-label={`Decrease ${m.name} in cart`} disabled={busy} onClick={() => edit(m.id, -1)}>−</button><button aria-label={`Increase ${m.name} in cart`} disabled={busy || !m.available || visit.session.status !== 'open' || cart[m.id] >= 100} onClick={() => edit(m.id, 1)}>+</button><button className="secondary" aria-label={`Remove ${m.name} from cart`} disabled={busy} onClick={() => edit(m.id, -cart[m.id])}>Remove</button></div>)}<label>Special instructions<textarea maxLength={1000} value={notes} onChange={e => { requestId.current = newRequestId(); setNotes(e.target.value); }} disabled={busy} /></label><p>Additional charges for this batch: <strong>{money(cartTotal)}</strong></p><p>The package is already on your table’s bill.</p><button onClick={submit} disabled={busy || !selected.length || visit.session.status !== 'open'}>{busy ? 'Sending…' : 'Submit batch'}</button></section>}
-      {stage === 'bill' && <><section className="dining-card"><h2>Your table’s bill</h2><div className="bill-line"><span>Regular guests × {visit.session.regularPax}</span><strong>{money(visit.session.regularPax * 220)}</strong></div><div className="bill-line"><span>Discounted guests × {visit.session.discountedPax}</span><strong>{money(visit.session.discountedPax * 195)}</strong></div><div className="bill-line"><span>Additional items</span><strong>{money(visit.additionalTotal)}</strong></div><div className="bill-line"><span>Additional discount: {visit.discountReason || 'None'}</span><strong>{money(visit.discountAmount)}</strong></div><div className="bill-line"><h2>Total</h2><h2>{money(visit.total)}</h2></div><button disabled={busy || visit.session.status !== 'open'} onClick={bill}>Finish ordering & request bill</button><p>Payment is confirmed by the cashier after every batch is served. Cancelled batches are excluded from your total.</p>{visit.session.status !== 'open' && visit.blockers.length > 0 && <p className="notice">Waiting for {visit.blockers.length} batch(es) to finish service.</p>}</section><h2>Shared order history</h2>{!visit.orders.length && <p>No orders yet.</p>}{visit.orders.map((o, i) => <article className="dining-card" key={o.id}><div className="bill-line"><h2>Batch {o.batchNumber || i + 1}</h2><strong>{statusLabel[o.status] || o.status}</strong></div><p>{new Date(o.timeOrdered).toLocaleTimeString()}</p>{o.items.map((item, j) => <p key={j}>{item.quantity} × {item.name} — {money(item.price * item.quantity)}</p>)}{o.customerNotes && <p>Instructions: {o.customerNotes}</p>}{o.cancellationReason && <p>Cancelled: {o.cancellationReason}</p>}<details><summary>Batch status history</summary>{o.history?.map((event, n) => <p key={n}>{statusLabel[event.status] || event.status} - {new Date(event.at).toLocaleTimeString()}</p>)}</details></article>)}</>}
+      {stage === 'bill' && <><section className="dining-card"><h2>Your table’s bill</h2><p>Customer: <strong>{visit.session.customerName}</strong></p><div className="bill-line"><span>Regular guests × {visit.session.regularPax}</span><strong>{money(visit.session.regularPax * visit.session.regularGuestPrice)}</strong></div><div className="bill-line"><span>Discounted guests × {visit.session.discountedPax}</span><strong>{money(visit.session.discountedPax * visit.session.discountedGuestPrice)}</strong></div><div className="bill-line"><span>Additional items</span><strong>{money(visit.additionalTotal)}</strong></div><div className="bill-line"><span>Additional discount: {visit.discountReason || 'None'}</span><strong>{money(visit.discountAmount)}</strong></div><div className="bill-line"><h2>Total</h2><h2>{money(visit.total)}</h2></div><button disabled={busy || visit.session.status !== 'open'} onClick={bill}>Finish ordering & request bill</button><p>Payment is confirmed by the cashier after every batch is served. Cancelled batches are excluded from your total.</p>{visit.session.status !== 'open' && visit.blockers.length > 0 && <p className="notice">Waiting for {visit.blockers.length} batch(es) to finish service.</p>}</section><h2>Shared order history</h2>{!visit.orders.length && <p>No orders yet.</p>}{visit.orders.map((o, i) => <article className="dining-card" key={o.id}><div className="bill-line"><h2>Batch {o.batchNumber || i + 1}</h2><strong>{statusLabel[o.status] || o.status}</strong></div><p>{new Date(o.timeOrdered).toLocaleTimeString()}</p>{o.items.map((item, j) => <p key={j}>{item.quantity} × {item.name} — {money(item.price * item.quantity)}</p>)}{o.customerNotes && <p>Instructions: {o.customerNotes}</p>}{o.cancellationReason && <p>Cancelled: {o.cancellationReason}</p>}<details><summary>Batch status history</summary>{o.history?.map((event, n) => <p key={n}>{statusLabel[event.status] || event.status} - {new Date(event.at).toLocaleTimeString()}</p>)}</details></article>)}</>}
     </>}
   </main>;
 }

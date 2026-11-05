@@ -24,7 +24,7 @@ test('table expansion, unique QR links, safe hiding and restoration', async t =>
   let cashier, owner, kitchen, visit, phone, batch;
   const state = async () => (await call('/dining/state', undefined, cashier)).data;
   const visibility = (id, hidden, cookie = cashier) => call(`/dining/tables/${id}`, { hidden }, cookie, '', 'PATCH');
-  const open = (tableNumber, cookie = cashier) => call('/dining/open', { tableNumber, regularPax: 1, discountedPax: 0 }, cookie);
+  const open = (tableNumber, cookie = cashier) => call('/dining/open', { tableNumber, customerName: 'Table Guest', regularPax: 2, discountedPax: 0 }, cookie);
   try {
     for (const role of ['cashier', 'owner', 'kitchen']) {
       const cookie = (await call('/staff/login', { username: role, password: 'TablesTest@123', role })).cookie;
@@ -59,7 +59,7 @@ test('table expansion, unique QR links, safe hiding and restoration', async t =>
       assert.equal((await visibility(12, true)).status, 200);
       assert.equal((await call('/dining/tables/12')).status, 404);
       assert.equal((await open(12)).status, 409);
-      assert.equal((await call('/dining/join', { tableNumber: 12, code: '123456' })).status, 401);
+      assert.equal((await call('/dining/join', { tableNumber: 12, code: '123456', customerName: 'Table Guest' })).status, 401);
       const added = await call('/dining/tables', {}, owner);
       assert.equal(added.data.id, 14);
       const current = await state();
@@ -68,7 +68,7 @@ test('table expansion, unique QR links, safe hiding and restoration', async t =>
     });
     await t.test('an expanded table supports joining and ordering; every unfinished visit blocks hiding', async () => {
       visit = (await open(11)).data;
-      phone = (await call('/dining/join', { tableNumber: 11, code: visit.code })).data;
+      phone = (await call('/dining/join', { tableNumber: 11, code: visit.code, customerName: 'Table Guest' })).data;
       assert.ok(phone.token);
       assert.equal((await visibility(11, true)).status, 409);
       const submitted = await call(`/dining/visits/${visit.id}/orders`, { requestId: 'expanded-table-batch', items: [{ menuItemId: 'add-1', quantity: 1 }] }, '', phone.token);
@@ -82,18 +82,18 @@ test('table expansion, unique QR links, safe hiding and restoration', async t =>
       }
       assert.equal((await call(`/dining/visits/${visit.id}/request-bill`, {}, '', phone.token)).status, 200);
       assert.equal((await visibility(11, true)).status, 409);
-      const paid = await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: 300, expectedTotal: 255 }, cashier);
+      const paid = await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: 500, expectedTotal: 475 }, cashier);
       assert.equal(paid.status, 200); assert.equal(paid.data.tableNumber, 11);
     });
     await t.test('hiding a completed table preserves its payments, batches and customer receipt', async () => {
       const before = await state();
       assert.equal((await visibility(11, true)).status, 200);
       assert.equal((await call('/dining/tables/11')).status, 404);
-      assert.equal((await call('/dining/join', { tableNumber: 11, code: visit.code })).status, 401);
+      assert.equal((await call('/dining/join', { tableNumber: 11, code: visit.code, customerName: 'Table Guest' })).status, 401);
       const current = await state();
       assert.deepEqual(current.orders, before.orders); assert.deepEqual(current.sessions, before.sessions); assert.deepEqual(current.transactions, before.transactions);
       const receipt = await call(`/dining/visits/${visit.id}`, undefined, '', phone.token);
-      assert.equal(receipt.status, 200); assert.equal(receipt.data.session.status, 'closed'); assert.equal(receipt.data.total, 255);
+      assert.equal(receipt.status, 200); assert.equal(receipt.data.session.status, 'closed'); assert.equal(receipt.data.total, 475);
     });
     await t.test('table additions and visibility survive restart; restoration keeps QR identity and fresh visit isolation', async () => {
       const before = db.prepare('SELECT body FROM dining_state WHERE id=1').get().body;
@@ -110,7 +110,7 @@ test('table expansion, unique QR links, safe hiding and restoration', async t =>
       const next = (await open(11)).data;
       assert.notEqual(next.id, visit.id); assert.notEqual(next.code, visit.code);
       assert.equal((await call(`/dining/visits/${next.id}`, undefined, '', phone.token)).status, 401);
-      assert.equal((await call('/dining/join', { tableNumber: 11, code: next.code })).status, 200);
+      assert.equal((await call('/dining/join', { tableNumber: 11, code: next.code, customerName: 'Table Guest' })).status, 200);
     });
     await t.test('racing hide and open operations cannot create an active hidden table', async () => {
       const results = await Promise.all([visibility(14, true), open(14)]);
