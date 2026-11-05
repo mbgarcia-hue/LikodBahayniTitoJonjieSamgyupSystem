@@ -1,4 +1,6 @@
-﻿# Restaurant Management System
+# LikodBahayniTitoJonjieSamgyupSystem
+
+Restaurant Management System for Likod Bahay ni Tito Jonjie.
 
 React/Vite frontend with an Express/SQLite backend. The dining workflow starts with **10 tables** and supports adding more, each with its own permanent QR link.
 
