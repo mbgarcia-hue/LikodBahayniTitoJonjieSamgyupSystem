@@ -1,12 +1,13 @@
 import StaffGate from '../components/StaffGate';
 import { Outlet } from 'react-router';
 import Sidebar from '../components/Sidebar';
-import { LayoutDashboard, Package, TrendingUp, User } from 'lucide-react';
+import { LayoutDashboard, Package, TrendingUp, User, Users } from 'lucide-react';
 
 const ownerNav = [
   { path: '/owner', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/owner/inventory', label: 'Inventory', icon: Package, inventoryBadge: true },
   { path: '/owner/sales', label: 'Sales Reports', icon: TrendingUp },
+  { path: '/owner/staff', label: 'Staff Accounts', icon: Users },
   { path: '/owner/profile', label: 'Profile', icon: User },
 ];
 

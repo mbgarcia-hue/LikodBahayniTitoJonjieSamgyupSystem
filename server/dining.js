@@ -221,7 +221,7 @@ function view(state, s) {
 export function installDining(app) {
   installAuth(app);
   const managers = roles('cashier', 'owner');
-  const inventoryManagers = roles('cashier', 'owner');
+  const inventoryManagers = roles('owner');
   app.use('/api/dining', (req, res, next) => {
     if (['POST', 'PATCH'].includes(req.method) && (!req.body || typeof req.body !== 'object' || Array.isArray(req.body))) return res.status(400).json({ error: 'Provide a JSON object' });
     next();
@@ -234,10 +234,27 @@ export function installDining(app) {
     if (req.staff.role === 'kitchen') {
       state.sessions = []; state.transactions = []; state.inventory = []; state.inventoryMovements = []; state.menu = [];
       state.orders = state.orders.filter(o => kitchenStatuses.includes(o.status) && activeSessions.has(o.sessionId)).map(({ reservedStock, requestId, ...o }) => ({ ...o, totalAmount: 0, history: (o.history || []).map(({ status, at, actorRole, actorName }) => ({ status, at, actorRole, actorName })), items: o.items.map(i => ({ ...i, price: 0 })) }));
+    } else if (req.staff.role === 'cashier') {
+      state.inventory = state.inventory.filter(item => !item.archived).map(item => {
+        const image = menuForInventory(state, item)?.image;
+        const status = item.currentStock <= 0 ? 'out' : item.currentStock <= item.lowStockThreshold ? 'low' : 'available';
+        return { id: item.id, name: item.name, image: image || null, lastUpdated: item.lastUpdated, status };
+      });
+      state.inventoryMovements = [];
     } else {
       state.inventory = state.inventory.map(item => {
         const image = menuForInventory(state, item)?.image;
         return image ? { ...item, image } : item;
+      });
+      const staffNames = new Map(database.prepare('SELECT id,full_name FROM staff_users').all().map(user => [user.id, user.full_name]));
+      state.transactions = state.transactions.map(transaction => {
+        if (transaction.confirmedByUsername || !transaction.confirmedByName) return transaction;
+        const username = transaction.confirmedByName;
+        return {
+          ...transaction,
+          confirmedByUsername: username,
+          confirmedByName: staffNames.get(transaction.confirmedBy) || username,
+        };
       });
     }
     res.set('Cache-Control', 'no-store').json(state);
@@ -323,10 +340,15 @@ export function installDining(app) {
     const prior = state.orders.find(o => o.sessionId === s.id && o.requestId === requestId); if (prior) return prior;
     if (s.status !== 'open') fail('Ordering is paused or this visit has ended', 409);
     if (!Array.isArray(items) || !items.length || items.length > 50 || typeof notes !== 'string' || notes.length > 1000) fail('Invalid order');
+    const maxPerItem = s.regularPax + s.discountedPax;
+    const itemQuantities = new Map();
     const demand = {}; const normalized = items.map(item => {
       if (!item || typeof item !== 'object') fail('Invalid order item');
       const menu = state.menu.find(m => m.id === item.menuItemId && m.available && visibleOnMenu(state, m));
-      if (!menu || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 100) fail('Invalid menu item or quantity');
+      if (!menu || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > maxPerItem) fail(`You can order up to ${maxPerItem} of each menu item per batch for this table.`);
+      const totalQuantity = (itemQuantities.get(menu.id) || 0) + item.quantity;
+      if (totalQuantity > maxPerItem) fail(`You can order up to ${maxPerItem} of each menu item per batch for this table.`);
+      itemQuantities.set(menu.id, totalQuantity);
       const rule = stockRule(menu); if (rule) demand[rule.inventoryId] = (demand[rule.inventoryId] || 0) + rule.amount * item.quantity;
       return { menuItemId: menu.id, name: menu.name, price: menu.price, quantity: item.quantity };
     });
@@ -386,7 +408,7 @@ export function installDining(app) {
     if (!['cash', 'online'].includes(paymentMethod)) fail('Select a payment method');
     if (paymentMethod === 'cash' && (!Number.isFinite(amountReceived) || amountReceived < total || Math.abs(Math.round(amountReceived * 100) - amountReceived * 100) > 0.000001)) fail('Enter a valid cash amount at least equal to the bill');
     if (paymentMethod === 'online' && (typeof reference !== 'string' || reference.trim().length < 5 || reference.length > 200)) fail('Enter a verified payment reference (5–200 characters)');
-    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, customerName: s.customerName || '', totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, leftoverFee: s.leftoverFee || null, leftoverFeeAmount: bill.leftoverFeeAmount, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.username, timestamp: new Date().toISOString() };
+    const txn = { id: randomUUID(), sessionId: s.id, tableNumber: s.tableNumber, customerName: s.customerName || '', totalBill: total, grossTotal: bill.grossTotal, discountAmount: bill.discountAmount, discountReason: bill.discountReason, leftoverFee: s.leftoverFee || null, leftoverFeeAmount: bill.leftoverFeeAmount, packageTotal: s.packageTotal, batchIds: state.orders.filter(o => o.sessionId === s.id && o.status !== 'cancelled').map(o => o.id), paymentMethod, amountReceived: paymentMethod === 'cash' ? amountReceived : total, change: paymentMethod === 'cash' ? amountReceived - total : 0, reference: paymentMethod === 'online' ? reference.trim() : null, confirmedBy: req.staff.id, confirmedByName: req.staff.fullName, confirmedByUsername: req.staff.username, timestamp: new Date().toISOString() };
     txn.change = Number(txn.change.toFixed(2));
     state.transactions.unshift(txn); s.status = 'closed'; s.closedAt = txn.timestamp;
     audit(req, s.id, 'payment_confirmed', txn); audit(req, s.id, 'session_closed', { transactionId: txn.id, total });
@@ -535,7 +557,7 @@ export function installDining(app) {
     state.inventoryMovements.unshift(movement);
     return movement;
   })));
-  app.put('/api/dining/inventory/:id/image', roles('cashier', 'owner'), async (req, res) => {
+  app.put('/api/dining/inventory/:id/image', roles('owner'), async (req, res) => {
     if (Object.keys(req.body || {}).length !== 1 || !Object.hasOwn(req.body, 'imageData')) fail('Provide a food photo to upload.');
     const storedImage = await storeMenuImage(req.body.imageData);
     try {

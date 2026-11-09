@@ -1,6 +1,7 @@
 import { Link } from 'react-router';
-import { Smartphone, ChefHat, Receipt, Crown } from 'lucide-react';
+import { Smartphone, ChefHat, Crown } from 'lucide-react';
 import { ImageWithFallback } from '@/app/components/figma/ImageWithFallback';
+import { PesoReceipt } from '../components/PesoSign';
 import restaurantLogo from '@/imports/685301822_878436815273126_809105010315524518_n-removebg-preview.png';
 
 const roles = [
@@ -13,7 +14,7 @@ const roles = [
   },
   {
     to: '/cashier/login',
-    icon: Receipt,
+    icon: PesoReceipt,
     iconBg: 'from-amber-600 to-amber-800',
     title: 'Cashier',
     description: 'Manage orders, process payments, and monitor inventory',

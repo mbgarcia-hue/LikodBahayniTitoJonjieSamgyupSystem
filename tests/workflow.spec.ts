@@ -81,8 +81,14 @@ test('cashier approves the first batch once, follow-ups reach kitchen directly, 
     expect(state.transactions.find(t => t.sessionId === first.sessionId).totalBill).toBe(810);
     expect(state.transactions.find(t => t.sessionId === first.sessionId).leftoverFeeAmount).toBe(300);
     expect(state.transactions.find(t => t.sessionId === first.sessionId).customerName).toBe('Workflow Group');
+    expect(state.transactions.find(t => t.sessionId === first.sessionId)).toMatchObject({ confirmedByName: 'Cashier User', confirmedByUsername: 'cashier' });
     const salesPage = await salesContext.newPage(); await login(salesPage, 'owner'); await salesPage.goto('/owner/sales');
     await expect(salesPage.getByRole('cell', { name: 'Workflow Group', exact: true })).toBeVisible();
+    const transactionRow = salesPage.getByRole('row').filter({ has: salesPage.getByRole('cell', { name: 'Workflow Group', exact: true }) });
+    await expect(transactionRow.getByRole('cell', { name: 'Cashier User', exact: true })).toBeVisible();
+    await salesPage.goto('/owner');
+    const dashboardRow = salesPage.getByRole('row').filter({ has: salesPage.getByRole('cell', { name: 'Workflow Group', exact: true }) });
+    await expect(dashboardRow.getByRole('cell', { name: 'Cashier User', exact: true })).toBeVisible();
     const audit=await (await staff.request.get(`/api/dining/visits/${first.sessionId}/audit`)).json(); expect(audit.filter(e=>e.event_type==='batch_approved')).toHaveLength(2);
     expect(audit.filter(e=>e.event_type==='batch_approved' && e.actor_role==='cashier')).toHaveLength(1);
     expect(audit.filter(e=>e.event_type==='batch_approved' && e.actor_role==='system')).toHaveLength(1);
@@ -102,6 +108,7 @@ test('cashier review can cancel an unapproved batch with a recorded reason', asy
     const customer=await phone.newPage(); await customer.goto('/customer/3'); await customer.getByLabel('Exact customer name from cashier', { exact: true }).fill('Cancel Test Guest'); await customer.getByLabel('Visit code').fill(code); await customer.getByRole('button',{name:'Open menu'}).click();
     await customer.getByRole('button',{name:'Add Coke to batch',exact:true}).click(); await customer.getByRole('button',{name:'Your cart (1)',exact:true}).click(); await customer.getByRole('button',{name:'Submit batch'}).click();
     await cashier.goto('/cashier/orders'); const batch=cashier.locator('.batch-card').filter({has:cashier.getByRole('heading',{name:'Table 3 · Batch 1',exact:true})});
+    await expect(cashier.getByRole('link', { name: 'Table sessions & final billing' })).toHaveCount(0);
     await batch.getByRole('button',{name:'Cancel batch',exact:true}).click(); await batch.getByLabel('Cancellation reason').fill('Customer changed their selection'); await batch.getByRole('button',{name:'Confirm cancellation'}).click();
     await expect(customer.getByText('Cancelled',{exact:true}).first()).toBeVisible(); await expect(customer.getByText('Cancelled: Customer changed their selection')).toBeVisible();
   } finally { await staff.close(); await phone.close(); }
@@ -148,4 +155,53 @@ test('two phones queue behind one initial approval and cashier follow-up records
     expect(audit.filter(e => e.event_type === 'batch_approved' && e.actor_role === 'cashier')).toHaveLength(1);
     expect(audit.filter(e => e.event_type === 'batch_approved' && e.actor_role === 'system')).toHaveLength(1);
   } finally { await Promise.all([staff.close(), kitchen.close(), phoneA.close(), phoneB.close()]); }
+});
+
+test('customers may order up to the table guest count of each item per batch', async ({ browser }) => {
+  const staff = await browser.newContext(), phone = await browser.newContext();
+  try {
+    const cashier = await staff.newPage(); await login(cashier, 'cashier');
+    const table = cashier.locator('article').filter({ has: cashier.getByRole('heading', { name: 'Table 5', exact: true }) });
+    await table.getByLabel('Customer name for Table 5', { exact: true }).fill('Per Item Limit Guest');
+    await table.getByLabel(/Regular guests/).fill('1');
+    await table.getByLabel(/Discounted guests/).fill('1');
+    await table.getByRole('button', { name: 'Open dining session' }).click();
+    const code = (await table.locator('strong.success').innerText()).trim();
+
+    const customer = await phone.newPage(); await customer.goto('/customer/5');
+    await customer.getByLabel('Exact customer name from cashier', { exact: true }).fill('Per Item Limit Guest');
+    await customer.getByLabel('Visit code').fill(code);
+    await customer.getByRole('button', { name: 'Open menu' }).click();
+    await expect(customer.getByText(/Each item is limited to 2 per batch/)).toBeVisible();
+    for (const item of ['Coke', 'Sprite']) {
+      const card = customer.locator('article').filter({ has: customer.getByRole('heading', { name: item, exact: true }) });
+      await card.getByRole('button', { name: `Add ${item} to batch`, exact: true }).click();
+      await card.getByRole('button', { name: `Add ${item} to batch`, exact: true }).click();
+      await expect(card.getByRole('button', { name: `Add ${item} to batch`, exact: true })).toBeDisabled();
+    }
+
+    const access = await customer.evaluate(() => JSON.parse(localStorage.getItem('visit-5') || 'null'));
+    const visit = await (await staff.request.get(`/api/dining/visits/${access.id}`, { headers: { 'X-Visit-Token': access.token } })).json();
+    const menuItemId = Object.fromEntries(visit.menu.filter((item: { name: string }) => ['Coke', 'Sprite'].includes(item.name)).map((item: { name: string; id: string }) => [item.name, item.id]));
+    const headers = { 'X-Visit-Token': access.token };
+    const overLimit = await phone.request.post(`/api/dining/visits/${access.id}/orders`, {
+      headers,
+      data: { requestId: 'over-table-limit', items: [{ menuItemId: menuItemId.Coke, quantity: 3 }] },
+    });
+    expect(overLimit.status()).toBe(400);
+    expect((await overLimit.json()).error).toContain('up to 2 of each menu item per batch');
+
+    const duplicateItemOverLimit = await phone.request.post(`/api/dining/visits/${access.id}/orders`, {
+      headers,
+      data: { requestId: 'duplicate-item-over-limit', items: [{ menuItemId: menuItemId.Coke, quantity: 2 }, { menuItemId: menuItemId.Coke, quantity: 1 }] },
+    });
+    expect(duplicateItemOverLimit.status()).toBe(400);
+
+    const validBatch = await phone.request.post(`/api/dining/visits/${access.id}/orders`, {
+      headers,
+      data: { requestId: 'at-table-limit', items: [{ menuItemId: menuItemId.Coke, quantity: 2 }, { menuItemId: menuItemId.Sprite, quantity: 2 }] },
+    });
+    expect(validBatch.ok()).toBe(true);
+    expect((await validBatch.json()).items.map((item: { quantity: number }) => item.quantity)).toEqual([2, 2]);
+  } finally { await staff.close(); await phone.close(); }
 });

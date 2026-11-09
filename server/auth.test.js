@@ -52,13 +52,19 @@ test('staff accounts and permissions', async t => {
       assert.equal(db.prepare('SELECT password_hash FROM staff_users WHERE username=?').get('owner').password_hash, before);
     });
     let visit;
-    await t.test('cashier manages tables and shared inventory while pricing remains owner-only', async () => {
+    await t.test('cashier manages tables, views inventory, and cannot edit stock', async () => {
       const body = { tableNumber: 1, customerName: 'Auth Guest', regularPax: 2, discountedPax: 0 };
       assert.equal((await call('/dining/open', body, kitchen.cookie)).status, 403);
       visit = (await call('/dining/open', body, cashier.cookie)).body;
       for (const path of [`/dining/visits/${visit.id}/pay`, `/dining/visits/${visit.id}/reopen`, `/dining/staff/visits/${visit.id}/request-bill`]) assert.equal((await call(path, {}, kitchen.cookie)).status, 403);
       assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, kitchen.cookie, 'PATCH')).status, 403);
-      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, cashier.cookie, 'PATCH')).status, 200);
+      assert.equal((await call('/dining/inventory', { name: 'Cashier Product' }, cashier.cookie)).status, 403);
+      assert.equal((await call('/dining/inventory/inv-13', { currentStock: 40 }, cashier.cookie, 'PATCH')).status, 403);
+      assert.equal((await call('/dining/inventory/inv-13/restock', { quantity: 1, reason: 'Cashier restock attempt' }, cashier.cookie)).status, 403);
+      assert.equal((await call('/dining/inventory/inv-13/image', { imageData: 'invalid' }, cashier.cookie, 'PUT')).status, 403);
+      const cashierState = await call('/dining/state', undefined, cashier.cookie);
+      assert.deepEqual(Object.keys(cashierState.body.inventory[0]).sort(), ['id', 'image', 'lastUpdated', 'name', 'status']);
+      assert.deepEqual(cashierState.body.inventoryMovements, []);
       assert.equal((await call('/dining/inventory/inv-13', { currentStock: 41 }, owner.cookie, 'PATCH')).status, 200);
       assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, cashier.cookie, 'PATCH')).status, 403);
     });
@@ -66,6 +72,37 @@ test('staff accounts and permissions', async t => {
       const state = (await call('/dining/state', undefined, cashier.cookie)).body; assert.equal(state.sessions[0].tokens, undefined); assert.equal(state.sessions[0].code, visit.code);
       const ks = (await call('/dining/state', undefined, kitchen.cookie)).body; assert.deepEqual(ks.sessions, []); assert.deepEqual(ks.transactions, []); assert.deepEqual(ks.inventory, []);
       assert.equal((await call('/dining/orders/missing', { status: 'preparing' }, cashier.cookie, 'PATCH')).status, 403);
+    });
+    await t.test('owner creates cashier and kitchen accounts with private credentials', async () => {
+      assert.equal((await call('/staff/accounts', undefined, cashier.cookie)).status, 403);
+      assert.equal((await call('/staff/accounts', { username: 'other.owner', password: 'StrongPass@123', role: 'owner', fullName: 'Another Owner' }, owner.cookie)).status, 400);
+      assert.equal((await call('/staff/accounts', { username: 'new.cashier', password: 'short', role: 'cashier', fullName: 'New Cashier' }, owner.cookie)).status, 400);
+      const createdCashier = await call('/staff/accounts', { username: 'new.cashier', password: 'InitialPass@123', role: 'cashier', fullName: 'New Cashier', email: 'new@example.com', phone: '' }, owner.cookie);
+      const createdKitchen = await call('/staff/accounts', { username: 'new.kitchen', password: 'InitialPass@123', role: 'kitchen', fullName: 'New Kitchen' }, owner.cookie);
+      assert.equal(createdCashier.status, 201); assert.equal(createdKitchen.status, 201);
+      assert.equal(createdCashier.body.user.password_hash, undefined);
+      assert.equal((await call('/staff/accounts', { username: 'new.cashier', password: 'AnotherPass@123', role: 'cashier', fullName: 'Duplicate User' }, owner.cookie)).status, 409);
+      const accounts = await call('/staff/accounts', undefined, owner.cookie);
+      assert.deepEqual(accounts.body.accounts.map(account => account.username).sort(), ['cashier', 'kitchen', 'new.cashier', 'new.kitchen']);
+      assert.equal(accounts.body.accounts.some(account => Object.hasOwn(account, 'password_hash')), false);
+    });
+    await t.test('forgot-password requests are private and owner resets the account', async () => {
+      const initial = await call('/staff/login', { username: 'new.cashier', password: 'InitialPass@123', role: 'cashier' });
+      const request = await call('/staff/password-reset-requests', { username: 'new.cashier', role: 'cashier' });
+      const unknown = await call('/staff/password-reset-requests', { username: 'missing.user', role: 'cashier' });
+      assert.equal(request.status, 202); assert.deepEqual(request.body, unknown.body);
+      await call('/staff/password-reset-requests', { username: 'new.cashier', role: 'cashier' });
+      const accounts = await call('/staff/accounts', undefined, owner.cookie);
+      assert.equal(accounts.body.resetRequests.length, 1);
+      assert.equal(accounts.body.resetRequests[0].username, 'new.cashier');
+      const requestId = accounts.body.resetRequests[0].id;
+      assert.equal((await call(`/staff/password-reset-requests/${requestId}/reset`, { password: 'short' }, owner.cookie)).status, 400);
+      assert.equal((await call(`/staff/password-reset-requests/${requestId}/reset`, { password: 'OwnerReset@123' })).status, 401);
+      assert.equal((await call(`/staff/password-reset-requests/${requestId}/reset`, { password: 'OwnerReset@123' }, owner.cookie)).status, 200);
+      assert.equal((await call('/staff/me', undefined, initial.cookie)).status, 401);
+      assert.equal((await call('/staff/login', { username: 'new.cashier', password: 'InitialPass@123', role: 'cashier' })).status, 401);
+      assert.equal((await call('/staff/login', { username: 'new.cashier', password: 'OwnerReset@123', role: 'cashier' })).status, 200);
+      assert.equal((await call('/staff/accounts', undefined, owner.cookie)).body.resetRequests.length, 0);
     });
     await t.test('profile changes save only to the current account', async () => {
       const result = await call('/staff/profile', { fullName: 'Cashier Updated', email: 'cashier@example.com', phone: '09123456789', role: 'owner' }, cashier.cookie, 'PATCH'); assert.equal(result.status, 200); assert.equal(result.body.user.role, 'cashier');

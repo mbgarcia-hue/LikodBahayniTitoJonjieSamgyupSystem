@@ -1,6 +1,6 @@
 import { ShoppingCart, Users, TrendingUp } from 'lucide-react';
 import StatCard from '../../components/StatCard';
-import PesoSign from '../../components/PesoSign';
+import { PesoCircle } from '../../components/PesoSign';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { salesSummary } from '../../lib/sales';
 import { format } from 'date-fns';
@@ -26,7 +26,7 @@ export default function OwnerDashboard() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
-        <StatCard title="Weekly Revenue" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoSign} color="gold" />
+        <StatCard title="Weekly Revenue" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoCircle} color="gold" />
         <StatCard title="Avg. Daily Sales" value={`₱${dailyAvg.toLocaleString()}`} icon={TrendingUp} color="blue" />
         <StatCard title="Active Tables" value={`${activeTables}/${totalTables}`} icon={Users} color="green" />
         <StatCard title="Total Orders" value={totalOrders} icon={ShoppingCart} color="red" />
@@ -36,21 +36,18 @@ export default function OwnerDashboard() {
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <p className="text-sm text-amber-500/60 mb-1">Transaction Revenue</p>
           <p className="text-4xl font-bold text-amber-300">₱{transactionRevenue.toLocaleString()}</p>
-          <p className="text-sm text-amber-500/50 mt-2">from {transactions.length} completed transactions</p>
         </div>
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <p className="text-sm text-amber-500/60 mb-1">Cash Payments</p>
           <p className="text-4xl font-bold text-green-400">
             {transactions.filter(t => t.paymentMethod === 'cash').length}
           </p>
-          <p className="text-sm text-amber-500/50 mt-2">transactions via cash</p>
         </div>
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <p className="text-sm text-amber-500/60 mb-1">Online Payments</p>
           <p className="text-4xl font-bold text-blue-400">
             {transactions.filter(t => t.paymentMethod === 'online').length}
           </p>
-          <p className="text-sm text-amber-500/50 mt-2">Online Payment</p>
         </div>
       </div>
 
@@ -67,13 +64,14 @@ export default function OwnerDashboard() {
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Customer</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Amount</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Method</th>
+                <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Cashier</th>
                 <th className="px-6 py-3 text-left text-sm font-semibold text-amber-400/80">Time</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-amber-600/20">
               {recentTransactions.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-6 py-8 text-center text-amber-500/50 text-sm">No transactions recorded yet</td>
+                  <td colSpan={7} className="px-6 py-8 text-center text-amber-500/50 text-sm">No transactions recorded yet</td>
                 </tr>
               )}
               {recentTransactions.map((t) => (
@@ -91,6 +89,7 @@ export default function OwnerDashboard() {
                       {t.paymentMethod === 'cash' ? 'Cash' : 'Online'}
                     </span>
                   </td>
+                  <td className="px-6 py-3 text-sm text-amber-200">{t.confirmedByName || t.confirmedByUsername || 'Not recorded'}</td>
                   <td className="px-6 py-3 text-sm text-amber-400/60">
                     {format(new Date(t.timestamp), 'MMM d, h:mm a')}
                   </td>

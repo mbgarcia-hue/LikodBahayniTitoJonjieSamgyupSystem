@@ -42,7 +42,8 @@ test('FIFO migrates current stock to an opening lot, consumes oldest lots, and r
     return { status: response.status, data: await response.json(), cookie: response.headers.get('set-cookie')?.split(';')[0] };
   }
   try {
-    const openingState = (await call('/dining/state', undefined, (await call('/staff/login', { username: 'cashier', password: 'FifoTest@123', role: 'cashier' })).cookie)).data;
+    const owner = (await call('/staff/login', { username: 'owner', password: 'FifoTest@123', role: 'owner' })).cookie;
+    const openingState = (await call('/dining/state', undefined, owner)).data;
     const openingLot = openingState.inventory.find(item => item.id === 'inv-13').stockLots[0];
     assert.equal(openingLot.quantity, 2.5);
     assert.equal(openingLot.remainingQuantity, 1.5);
@@ -51,10 +52,10 @@ test('FIFO migrates current stock to an opening lot, consumes oldest lots, and r
     const cashier = (await call('/staff/login', { username: 'cashier', password: 'FifoTest@123', role: 'cashier' })).cookie;
     assert.deepEqual((await call('/dining/state', undefined, cashier)).data.orders.find(order => order.id === 'legacy-fifo-order').reservedStockLots['inv-13'], [{ lotId: openingLot.id, quantity: 1, receivedAt: openingLot.receivedAt }]);
     assert.equal((await call('/dining/orders/legacy-fifo-order/cancel', { reason: 'Legacy order cancelled' }, cashier)).status, 200);
-    assert.equal((await call('/dining/state', undefined, cashier)).data.inventory.find(item => item.id === 'inv-13').currentStock, 2.5);
-    const restock = await call('/dining/inventory/inv-13/restock', { quantity: 2, reason: 'New supplier delivery' }, cashier);
+    assert.equal((await call('/dining/state', undefined, owner)).data.inventory.find(item => item.id === 'inv-13').currentStock, 2.5);
+    const restock = await call('/dining/inventory/inv-13/restock', { quantity: 2, reason: 'New supplier delivery' }, owner);
     assert.equal(restock.status, 200);
-    const visit = (await call('/dining/open', { tableNumber: 1, customerName: 'FIFO Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
+    const visit = (await call('/dining/open', { tableNumber: 1, customerName: 'FIFO Guest', regularPax: 3, discountedPax: 0 }, cashier)).data;
     const customer = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'FIFO Guest' })).data;
 
     const submit = requestId => call(`/dining/visits/${visit.id}/orders`, {
@@ -64,29 +65,29 @@ test('FIFO migrates current stock to an opening lot, consumes oldest lots, and r
     const first = await submit('fifo-cancelled-order');
     assert.equal(first.status, 200);
     assert.deepEqual(first.data.reservedStockLots['inv-13'].map(lot => lot.quantity), [2.5, 0.5]);
-    let state = (await call('/dining/state', undefined, cashier)).data;
+    let state = (await call('/dining/state', undefined, owner)).data;
     let lots = state.inventory.find(item => item.id === 'inv-13').stockLots;
     assert.deepEqual(lots.map(lot => lot.remainingQuantity), [0, 1.5]);
 
     assert.equal((await call(`/dining/orders/${first.data.id}/cancel`, { reason: 'Customer changed order' }, cashier)).status, 200);
-    state = (await call('/dining/state', undefined, cashier)).data;
+    state = (await call('/dining/state', undefined, owner)).data;
     lots = state.inventory.find(item => item.id === 'inv-13').stockLots;
     assert.deepEqual(lots.map(lot => lot.remainingQuantity), [2.5, 2]);
 
     const second = await submit('fifo-followup-order');
     assert.equal(second.status, 200);
     assert.deepEqual(second.data.reservedStockLots['inv-13'].map(lot => lot.quantity), [2.5, 0.5]);
-    state = (await call('/dining/state', undefined, cashier)).data;
+    state = (await call('/dining/state', undefined, owner)).data;
     lots = state.inventory.find(item => item.id === 'inv-13').stockLots;
     assert.equal(state.inventory.find(item => item.id === 'inv-13').currentStock, 1.5);
     assert.deepEqual(lots.map(lot => lot.remainingQuantity), [0, 1.5]);
 
-    assert.equal((await call('/dining/inventory/inv-13', { currentStock: 2.5 }, cashier, '', 'PATCH')).status, 200);
-    state = (await call('/dining/state', undefined, cashier)).data;
+    assert.equal((await call('/dining/inventory/inv-13', { currentStock: 2.5 }, owner, '', 'PATCH')).status, 200);
+    state = (await call('/dining/state', undefined, owner)).data;
     lots = state.inventory.find(item => item.id === 'inv-13').stockLots;
     assert.deepEqual(lots.map(lot => lot.remainingQuantity), [0, 1.5, 1]);
-    assert.equal((await call('/dining/inventory/inv-13', { currentStock: 1.5 }, cashier, '', 'PATCH')).status, 200);
-    state = (await call('/dining/state', undefined, cashier)).data;
+    assert.equal((await call('/dining/inventory/inv-13', { currentStock: 1.5 }, owner, '', 'PATCH')).status, 200);
+    state = (await call('/dining/state', undefined, owner)).data;
     lots = state.inventory.find(item => item.id === 'inv-13').stockLots;
     assert.equal(state.inventory.find(item => item.id === 'inv-13').currentStock, 1.5);
     assert.deepEqual(lots.map(lot => lot.remainingQuantity), [0, 0.5, 1]);

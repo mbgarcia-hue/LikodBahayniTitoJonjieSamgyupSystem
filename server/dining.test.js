@@ -57,8 +57,10 @@ test('ten tables, shared visits, stock, retries, billing and fresh table reuse',
     assert.equal(view.orders.length, 1); assert.equal(view.total, 705); assert.equal(view.orders[0].customerNotes, 'No ice'); assert.equal(view.session.customerName, 'Test Guest');
     assert.equal(view.session.code, undefined); assert.equal(view.session.tokens, undefined);
     state = (await request('/dining/state')).data; assert.equal(state.inventory.find(i => i.id === 'inv-13').currentStock, 46);
-    const tooMuch = { requestId: 'stock-test', items: [{ menuItemId: 'add-1', quantity: 30 }, { menuItemId: 'add-1', quantity: 30 }] };
-    assert.equal((await request(`/dining/visits/${s.id}/orders`, tooMuch, a.token)).status, 409);
+    const duplicateItemOverLimit = { requestId: 'duplicate-item-limit', items: [{ menuItemId: 'add-1', quantity: 2 }, { menuItemId: 'add-1', quantity: 2 }] };
+    const duplicateItemResult = await request(`/dining/visits/${s.id}/orders`, duplicateItemOverLimit, a.token);
+    assert.equal(duplicateItemResult.status, 400);
+    assert.match(duplicateItemResult.data.error, /up to 3 of each menu item per batch/);
     assert.equal((await request(`/dining/visits/${s.id}/orders`, { requestId: 'bad', items: [{ menuItemId: 'add-1', quantity: -1 }] }, a.token)).status, 400);
     await request(`/dining/orders/${created.data.id}/approve`, { expectedTotal: 70 });
     await request(`/dining/orders/${created.data.id}`, { status: 'preparing' }, undefined, true, 'PATCH');

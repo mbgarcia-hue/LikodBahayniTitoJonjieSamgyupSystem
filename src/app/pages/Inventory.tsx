@@ -30,6 +30,7 @@ export default function Inventory({ canManage = false, canManagePricing = false 
   const outOfStockItems   = getOutOfStockItems();
 
   const getStockStatus = (item: typeof inventory[0]) => {
+    if (item.status) return item.status;
     if (item.currentStock === 0) return 'out';
     if (item.currentStock <= item.lowStockThreshold) return 'low';
     return 'available';
@@ -58,6 +59,51 @@ export default function Inventory({ canManage = false, canManagePricing = false 
     const matchesFilter = filterStatus === 'all' || getStockStatus(item) === filterStatus;
     return matchesSearch && matchesFilter;
   });
+
+  if (!canManage) return (
+    <div className="p-8">
+      <header className="mb-6">
+        <h1 className="text-3xl font-bold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Inventory Overview</h1>
+        <p className="mt-1 text-amber-500/60">View item photos and availability. Inventory is managed by the owner.</p>
+      </header>
+      <div className="mb-5">
+        <input
+          type="text"
+          aria-label="Search inventory items"
+          placeholder="Search inventory items…"
+          value={searchTerm}
+          onChange={event => setSearchTerm(event.target.value)}
+          className="w-full rounded-lg border border-amber-600/40 bg-[#252018] px-4 py-2.5 text-amber-100 placeholder-amber-700/50 focus:border-amber-500 focus:outline-none"
+        />
+      </div>
+      <div className="overflow-hidden rounded-xl border border-amber-600/30 bg-[#252018] shadow-md">
+        <div className="overflow-x-auto">
+          <table className="w-full">
+            <thead className="border-b border-amber-600/30 bg-[#1A1210]">
+              <tr>
+                <th className="px-4 py-4 text-left text-sm font-semibold text-amber-400/80">Photo</th>
+                <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Item Name</th>
+                <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Last Updated</th>
+                <th className="px-6 py-4 text-left text-sm font-semibold text-amber-400/80">Status</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-amber-600/20">
+              {filteredInventory.length === 0 && <tr><td colSpan={4} className="px-6 py-10 text-center text-sm text-amber-500/40">No items match your search</td></tr>}
+              {filteredInventory.map(item => {
+                const status = getStockStatus(item);
+                return <tr key={item.id} className="hover:bg-amber-600/10">
+                  <td className="px-4 py-3"><InventoryImageEditor item={item} editable={false} /></td>
+                  <td className="px-6 py-4 font-medium text-amber-200">{item.name}</td>
+                  <td className="px-6 py-4 text-sm text-amber-400/60">{format(new Date(item.lastUpdated), 'MMM d, h:mm a')}</td>
+                  <td className="px-6 py-4"><span className={`inline-block rounded-full px-3 py-1 text-xs font-medium ${getStatusBadge(status)}`}>{getStatusText(status)}</span></td>
+                </tr>;
+              })}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  );
 
   const filteredArchive = archivedInventory.filter((item) =>
     item.name.toLowerCase().includes(searchTerm.toLowerCase())

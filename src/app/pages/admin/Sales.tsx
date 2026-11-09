@@ -1,7 +1,7 @@
-import { TrendingUp, ShoppingBag, Award, Receipt } from 'lucide-react';
+import { TrendingUp, ShoppingBag, Award } from 'lucide-react';
 import { salesSummary } from '../../lib/sales';
 import StatCard from '../../components/StatCard';
-import PesoSign from '../../components/PesoSign';
+import PesoSign, { PesoCircle, PesoReceipt } from '../../components/PesoSign';
 import { useRestaurant } from '../../context/RestaurantContext';
 import { format } from 'date-fns';
 
@@ -160,7 +160,7 @@ export default function Sales() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4 mb-8">
-        <StatCard title="Total Revenue (7 Days)" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoSign} color="gold" />
+        <StatCard title="Total Revenue" value={`₱${totalRevenue.toLocaleString()}`} icon={PesoSign} color="gold" />
         <StatCard title="Average Daily Sales" value={`₱${Math.round(averageDailySales).toLocaleString()}`} icon={TrendingUp} color="blue" />
         <StatCard title="Today's Sales" value={`₱${todaySales.toLocaleString()}`} icon={PesoSign} color="green" />
         <StatCard title="Total Orders" value={totalOrders} icon={ShoppingBag} color="red" />
@@ -181,7 +181,7 @@ export default function Sales() {
       <div className="grid gap-6 lg:grid-cols-2 mb-8">
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <div className="flex items-center gap-3 mb-6">
-            <Receipt className="h-6 w-6 text-amber-500" />
+            <PesoReceipt className="h-6 w-6 text-amber-500" />
             <h2 className="text-xl font-semibold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Payment Method Distribution</h2>
           </div>
           <DonutChart data={paymentMethodData} />
@@ -189,7 +189,7 @@ export default function Sales() {
 
         <div className="rounded-xl bg-[#252018] border border-amber-600/30 p-6 shadow-md">
           <div className="flex items-center gap-3 mb-6">
-            <PesoSign className="h-6 w-6 text-2xl text-amber-500" />
+            <PesoReceipt className="h-6 w-6 text-amber-500" />
             <h2 className="text-xl font-semibold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Transaction Summary</h2>
           </div>
           <div className="space-y-4">
@@ -213,7 +213,7 @@ export default function Sales() {
 
       <div className="rounded-xl bg-[#252018] border border-amber-600/30 shadow-md mb-8 overflow-hidden">
         <div className="px-6 py-4 border-b border-amber-600/30 flex items-center gap-3">
-          <Receipt className="h-6 w-6 text-amber-500" />
+          <PesoReceipt className="h-6 w-6 text-amber-500" />
           <h2 className="text-xl font-semibold text-amber-300" style={{ fontFamily: "'Cinzel', serif" }}>Recent Transaction History</h2>
         </div>
         <div className="overflow-x-auto">
@@ -225,6 +225,7 @@ export default function Sales() {
                 <th className="px-4 py-3 text-left text-sm font-semibold text-amber-400/80">Customer</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-amber-400/80">Amount</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-amber-400/80">Payment Method</th>
+                <th className="px-4 py-3 text-left text-sm font-semibold text-amber-400/80">Cashier</th>
                 <th className="px-4 py-3 text-left text-sm font-semibold text-amber-400/80">Time</th>
               </tr>
             </thead>
@@ -244,6 +245,7 @@ export default function Sales() {
                       {transaction.paymentMethod === 'cash' ? 'Cash' : 'Online'}
                     </span>
                   </td>
+                  <td className="px-4 py-3 text-sm text-amber-200">{transaction.confirmedByName || transaction.confirmedByUsername || 'Not recorded'}</td>
                   <td className="px-4 py-3 text-sm text-amber-400/60">
                     {format(new Date(transaction.timestamp), 'MMM d, h:mm a')}
                   </td>

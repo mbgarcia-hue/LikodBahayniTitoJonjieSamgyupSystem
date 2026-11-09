@@ -16,10 +16,18 @@ for (const role of ['cashier', 'kitchen', 'owner']) test(`${role}: branded login
   await page.screenshot({ path: `test-results/${role}-login.png`, fullPage: true });
   await login(page, role);
   await expect(page).toHaveURL(role === 'cashier' ? /\/cashier\/billing$/ : new RegExp(`/${role}$`));
+  if (role === 'cashier') await expect(page.getByText('Hello, cashier', { exact: true })).toBeVisible();
 });
 test('wrong credentials and cross-role login stay on the login form', async ({ page }) => {
   await page.goto('/owner/login'); await page.getByLabel('Username', { exact: true }).fill('cashier'); await page.getByLabel('Password', { exact: true }).fill('Cashier@123'); await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await expect(page.getByRole('alert')).toContainText('Incorrect username or password'); await expect(page).toHaveURL(/owner\/login$/);
+});
+test('owner forgotten-password link explains administrator-assisted recovery', async ({ page }) => {
+  await page.goto('/owner/login');
+  await page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('owner account cannot approve its own reset');
+  await page.getByRole('button', { name: 'Back to sign in' }).click();
+  await expect(page.getByRole('button', { name: 'Sign in', exact: true })).toBeVisible();
 });
 test('route guards redirect signed-out and wrong-role users; logout invalidates access', async ({ page }) => {
   await page.goto('/owner'); await expect(page).toHaveURL(/owner\/login$/);
@@ -43,6 +51,46 @@ test('mobile login fits screen and role links show the matching form', async ({ 
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.getByRole('link', { name: 'Kitchen', exact: true }).click(); await expect(page.getByRole('heading', { name: 'Kitchen Login' })).toBeVisible();
   await page.screenshot({ path: 'test-results/mobile-login.png', fullPage: true });
+});
+test('owner creates a staff account and resolves its forgotten-password request', async ({ page }) => {
+  await login(page, 'owner');
+  await page.getByRole('link', { name: 'Staff Accounts', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Staff Accounts', exact: true })).toBeVisible();
+  await page.getByLabel('Account type').selectOption('cashier');
+  await page.getByLabel('Full name').fill('Recovery Test Cashier');
+  await page.getByLabel('Username').fill('e2e.cashier');
+  await page.getByRole('textbox', { name: 'Initial password' }).fill('InitialPass@123');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Staff account created');
+  await expect(page.getByText('Username: e2e.cashier')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Logout' }).click();
+  await expect(page).toHaveURL(/owner\/login$/);
+  await page.goto('/cashier/login');
+  await page.getByRole('button', { name: 'Forgot password?', exact: true }).click();
+  await page.getByLabel('Username', { exact: true }).fill('e2e.cashier');
+  await page.getByRole('button', { name: 'Send recovery request' }).click();
+  await expect(page.getByRole('status')).toContainText('the owner will review the request');
+
+  await login(page, 'owner');
+  await page.getByRole('link', { name: 'Staff Accounts', exact: true }).click();
+  await expect(page.getByText('Recovery Test Cashier').first()).toBeVisible();
+  const temporaryPassword = page.getByRole('textbox', { name: /Temporary password/ });
+  await temporaryPassword.fill('TemporaryPass@123');
+  await page.getByRole('button', { name: 'Show temporary password' }).click();
+  await expect(temporaryPassword).toHaveAttribute('type', 'text');
+  await page.getByRole('button', { name: 'Hide temporary password' }).click();
+  await expect(temporaryPassword).toHaveAttribute('type', 'password');
+  await page.getByRole('button', { name: 'Reset password' }).click();
+  await expect(page.getByRole('status')).toContainText('Password reset for e2e.cashier');
+
+  await page.getByRole('button', { name: 'Logout' }).click();
+  await expect(page).toHaveURL(/owner\/login$/);
+  await page.goto('/cashier/login');
+  await page.getByLabel('Username', { exact: true }).fill('e2e.cashier');
+  await page.getByLabel('Password', { exact: true }).fill('TemporaryPass@123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page).toHaveURL(/cashier\/billing$/);
 });
 test('profile saves to the signed-in account and survives reload', async ({ page }) => {
   await login(page, 'owner'); await page.goto('/owner/profile');

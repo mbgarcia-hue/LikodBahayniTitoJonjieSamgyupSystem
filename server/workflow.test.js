@@ -28,7 +28,7 @@ test('cashier-approved batches, stock reservations, strict service completion an
   }
   const login = async role => (await call('/staff/login', { username: role, password: role[0].toUpperCase()+role.slice(1)+'@123', role })).cookie;
   let cashier, kitchen, owner, visit, phone, first, second, cancelled, savedFirst;
-  const state = async () => (await call('/dining/state', undefined, cashier)).data;
+  const state = async () => (await call('/dining/state', undefined, owner)).data;
   const patch = (o, status, cookie = kitchen) => call(`/dining/orders/${o.id}`, { status }, cookie, '', 'PATCH');
   const pay = (total, cash = 1000) => call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'cash', amountReceived: cash, expectedTotal: total }, cashier);
   try {
@@ -107,7 +107,7 @@ test('cashier-approved batches, stock reservations, strict service completion an
       assert.equal(customerBill.session.leftoverFee.description, leftover.leftoverDescription);
       assert.equal((await pay(705)).status, 409); assert.equal((await pay(994.88, 100)).status, 400);
       assert.equal((await call(`/dining/visits/${visit.id}/pay`, { paymentMethod: 'online', expectedTotal: 994.88 }, cashier)).status, 400);
-      const payment = await pay(994.88); assert.equal(payment.status, 200); assert.equal(payment.data.totalBill, 994.88); assert.equal(payment.data.discountAmount, 10.12); assert.equal(payment.data.leftoverFeeAmount, 300); assert.equal(payment.data.leftoverFee.description, leftover.leftoverDescription); assert.equal(payment.data.change, 5.12); assert.equal(payment.data.confirmedByName, 'cashier');
+      const payment = await pay(994.88); assert.equal(payment.status, 200); assert.equal(payment.data.totalBill, 994.88); assert.equal(payment.data.discountAmount, 10.12); assert.equal(payment.data.leftoverFeeAmount, 300); assert.equal(payment.data.leftoverFee.description, leftover.leftoverDescription); assert.equal(payment.data.change, 5.12); assert.equal(payment.data.confirmedByName, 'Cashier User'); assert.equal(payment.data.confirmedByUsername, 'cashier');
       assert.equal((await pay(994.88)).data.id, payment.data.id);
     });
     await t.test('closure preserves served states and append-only staff/customer audit history', async () => {

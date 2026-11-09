@@ -16,6 +16,16 @@ database.exec(`
     user_id TEXT NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
     expires_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS staff_password_reset_requests (
+    id TEXT PRIMARY KEY,
+    user_id TEXT NOT NULL REFERENCES staff_users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','resolved')),
+    resolved_at TEXT,
+    resolved_by TEXT REFERENCES staff_users(id)
+  );
+  CREATE UNIQUE INDEX IF NOT EXISTS staff_one_pending_password_reset
+    ON staff_password_reset_requests(user_id) WHERE status = 'pending';
 `);
 export function hashPassword(password) {
   const salt = randomBytes(16).toString('hex');
@@ -58,6 +68,22 @@ function loginLimit(req, res, next) {
 }
 function setCookie(req, res, value, age = 28800) { res.setHeader('Set-Cookie', `staff=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${age}${req.secure ? '; Secure' : ''}`); }
 function revoke(req) { const current = token(req); if (current) database.prepare('DELETE FROM staff_sessions WHERE token_hash=?').run(digest(current)); }
+function accountUser(user) {
+  return { id: user.id, username: user.username, role: user.role, fullName: user.full_name, email: user.email, phone: user.phone };
+}
+const passwordLengthError = 'Use a password between 8 and 256 characters';
+const validPassword = password => typeof password === 'string' && password.length >= 8 && password.length <= 256;
+const pendingResetLimit = new Map();
+function resetRequestLimit(req, res, next) {
+  const now = Date.now();
+  for (const [key, item] of pendingResetLimit) if (item.until <= now) pendingResetLimit.delete(key);
+  const key = req.ip;
+  const item = pendingResetLimit.get(key) || { count: 0, until: now + 15 * 60000 };
+  if (item.count >= 10) return res.status(429).json({ error: 'Too many recovery requests. Try again in 15 minutes.' });
+  item.count++;
+  pendingResetLimit.set(key, item);
+  next();
+}
 export function installAuth(app) {
   app.post('/api/staff/login', loginLimit, (req, res) => {
     const { username, password, role } = req.body || {};
@@ -73,6 +99,66 @@ export function installAuth(app) {
   });
   app.get('/api/staff/me', staffOnly, (req, res) => res.set('Cache-Control', 'no-store').json({ user: req.staff }));
   app.post('/api/staff/logout', (req, res) => { revoke(req); setCookie(req, res, '', 0); res.json({ ok: true }); });
+  app.post('/api/staff/password-reset-requests', resetRequestLimit, (req, res) => {
+    const { username, role } = req.body || {};
+    if (typeof username !== 'string' || !username.trim() || username.length > 100 || !['cashier', 'kitchen'].includes(role)) {
+      return res.status(400).json({ error: 'Enter the username for a cashier or kitchen account' });
+    }
+    const user = database.prepare('SELECT id FROM staff_users WHERE username=? AND role=?').get(username.trim(), role);
+    if (user) {
+      database.prepare(`INSERT INTO staff_password_reset_requests(id,user_id,created_at)
+        VALUES(?,?,?) ON CONFLICT(user_id) WHERE status='pending' DO NOTHING`)
+        .run(randomUUID(), user.id, new Date().toISOString());
+    }
+    res.set('Cache-Control', 'no-store').status(202).json({
+      message: 'If that account exists, the owner will review the request. Ask the owner in person for your temporary password.',
+    });
+  });
+  app.get('/api/staff/accounts', roles('owner'), (_req, res) => {
+    const accounts = database.prepare(`SELECT id,username,role,full_name,email,phone FROM staff_users
+      WHERE role IN ('cashier','kitchen') ORDER BY role,username`).all().map(accountUser);
+    const resetRequests = database.prepare(`SELECT r.id,r.created_at AS createdAt,u.username,u.role,u.full_name AS fullName
+      FROM staff_password_reset_requests r JOIN staff_users u ON u.id=r.user_id
+      WHERE r.status='pending' ORDER BY r.created_at`).all();
+    res.set('Cache-Control', 'no-store').json({ accounts, resetRequests });
+  });
+  app.post('/api/staff/accounts', roles('owner'), (req, res) => {
+    const { username, password, role, fullName, email = '', phone = '' } = req.body || {};
+    if (typeof username !== 'string' || !/^[a-zA-Z0-9._-]{3,40}$/.test(username.trim())
+      || !validPassword(password) || !['cashier', 'kitchen'].includes(role)
+      || typeof fullName !== 'string' || !fullName.trim() || fullName.trim().length > 100
+      || typeof email !== 'string' || email.length > 200 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      || typeof phone !== 'string' || phone.length > 40) {
+      return res.status(400).json({ error: 'Enter a 3–40 character username, a cashier or kitchen role, a name, a valid optional email/phone, and a password of at least 8 characters' });
+    }
+    try {
+      const user = {
+        id: randomUUID(), username: username.trim(), role, full_name: fullName.trim(),
+        email: email.trim(), phone: phone.trim(),
+      };
+      database.prepare('INSERT INTO staff_users(id,username,password_hash,role,full_name,email,phone) VALUES(?,?,?,?,?,?,?)')
+        .run(user.id, user.username, hashPassword(password), user.role, user.full_name, user.email, user.phone);
+      res.status(201).json({ user: accountUser(user) });
+    } catch (error) {
+      if (error.code === 'SQLITE_CONSTRAINT_UNIQUE') return res.status(409).json({ error: 'That username is already in use' });
+      throw error;
+    }
+  });
+  app.post('/api/staff/password-reset-requests/:id/reset', roles('owner'), (req, res) => {
+    const { password } = req.body || {};
+    if (!validPassword(password)) return res.status(400).json({ error: passwordLengthError });
+    const request = database.prepare(`SELECT id,user_id FROM staff_password_reset_requests
+      WHERE id=? AND status='pending'`).get(req.params.id);
+    if (!request) return res.status(404).json({ error: 'This password reset request is no longer pending' });
+    const timestamp = new Date().toISOString();
+    database.transaction(() => {
+      database.prepare('UPDATE staff_users SET password_hash=? WHERE id=?').run(hashPassword(password), request.user_id);
+      database.prepare('DELETE FROM staff_sessions WHERE user_id=?').run(request.user_id);
+      database.prepare(`UPDATE staff_password_reset_requests SET status='resolved',resolved_at=?,resolved_by=?
+        WHERE user_id=? AND status='pending'`).run(timestamp, req.staff.id, request.user_id);
+    })();
+    res.json({ ok: true });
+  });
   app.patch('/api/staff/profile', staffOnly, (req, res) => {
     const { fullName, email, phone } = req.body || {};
     if (typeof fullName !== 'string' || !fullName.trim() || fullName.length > 100 || typeof email !== 'string' || email.length > 200 || (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) || typeof phone !== 'string' || phone.length > 40) return res.status(400).json({ error: 'Enter a name, a valid email (or leave blank), and a phone number' });

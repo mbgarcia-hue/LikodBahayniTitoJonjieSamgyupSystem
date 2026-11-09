@@ -61,17 +61,29 @@ export default function TableVisit() {
   useEffect(() => {
     if (!visit || busy) return;
     const visible = new Set(visit.menu.map(m => m.id));
-    if (Object.entries(cart).some(([id, quantity]) => quantity > 0 && !visible.has(id))) {
-      setCart(previous => Object.fromEntries(Object.entries(previous).filter(([id]) => visible.has(id))));
+    const maxPerItem = visit.session.regularPax + visit.session.discountedPax;
+    const hasUnavailableItems = Object.entries(cart).some(([id, quantity]) => quantity > 0 && !visible.has(id));
+    const hasOverLimitItems = Object.values(cart).some(quantity => quantity > maxPerItem);
+    if (hasUnavailableItems || hasOverLimitItems) {
+      setCart(previous => Object.fromEntries(Object.entries(previous)
+        .filter(([id]) => visible.has(id))
+        .map(([id, quantity]) => [id, Math.min(quantity, maxPerItem)])));
       requestId.current = newRequestId();
-      setError('Some items were removed from your draft because they are no longer on the menu. Please review your cart.');
+      setError(hasUnavailableItems
+        ? 'Some items were removed from your draft because they are no longer on the menu. Please review your cart.'
+        : `Your draft was updated to the table limit of ${maxPerItem} of each item per batch.`);
     }
   }, [visit?.menu, cart, busy]);
   async function join(e: React.FormEvent) {
     e.preventDefault(); setBusy(true); setError('');
     try { const next = await api('/dining/join', { tableNumber, code, customerName }); localStorage.setItem(key, JSON.stringify(next)); setAccess(next); navigate(`/customer/${tableId}/menu`); } catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
-  function edit(id: string, delta: number) { if (busy) return; requestId.current = newRequestId(); setCart(prev => ({ ...prev, [id]: Math.max(0, Math.min(100, (prev[id] || 0) + delta)) })); }
+  function edit(id: string, delta: number) {
+    if (busy) return;
+    const maxPerItem = visit ? visit.session.regularPax + visit.session.discountedPax : 0;
+    requestId.current = newRequestId();
+    setCart(prev => ({ ...prev, [id]: Math.max(0, Math.min(maxPerItem, (prev[id] || 0) + delta)) }));
+  }
   async function submit() {
     if (!access || busy) return; setBusy(true); setError('');
     try {
@@ -106,19 +118,19 @@ export default function TableVisit() {
       <p className="notice">Billing name: <strong>{visit.session.customerName || 'Not provided'}</strong> · {visit.session.regularPax + visit.session.discountedPax} guests · Package {money(visit.session.packageTotal)} charged once per visit. Your draft cart is private; submitted orders are shared.</p>
       <p className="notice">{visit.session.initialBatchApproved ? 'Your first batch is approved. New batches go directly to the kitchen.' : 'The cashier approves your table’s first batch. Additional batches wait for that approval, then go directly to the kitchen.'}</p>
       {visit.session.status !== 'open' && <p className="notice">Bill requested. Ordering is paused. Please pay the cashier or ask staff to reopen ordering.</p>}
-      {stage === 'menu' && <><p>Add items to your batch, then adjust quantities and submit from Your cart.</p><div className="dining-tabs menu-categories">{['All', ...new Set(visit.menu.map(m => m.category))].map(c => <button className={activeCategory === c ? 'active' : 'secondary'} key={c} aria-pressed={activeCategory === c} onClick={() => setCategory(c)}>{c}</button>)}</div><div className="dining-grid menu-grid">{visit.menu.filter(m => activeCategory === 'All' || m.category === activeCategory).map(m => <article className="dining-card menu-card" key={m.id}>
+      {stage === 'menu' && <><p>Add items to your batch, then adjust quantities and submit from Your cart. Each item is limited to {visit.session.regularPax + visit.session.discountedPax} per batch for this table.</p><div className="dining-tabs menu-categories">{['All', ...new Set(visit.menu.map(m => m.category))].map(c => <button className={activeCategory === c ? 'active' : 'secondary'} key={c} aria-pressed={activeCategory === c} onClick={() => setCategory(c)}>{c}</button>)}</div><div className="dining-grid menu-grid">{visit.menu.filter(m => activeCategory === 'All' || m.category === activeCategory).map(m => <article className="dining-card menu-card" key={m.id}>
         <div className="menu-card-photo">
           <img src={menuImage(m)} alt={m.name} loading="lazy" decoding="async" onError={event => { event.currentTarget.src = fallbackFoodImage; }} />
           <span className={`menu-availability ${m.available ? 'is-available' : 'is-unavailable'}`}>{m.available ? 'Available' : 'Out of stock'}</span>
         </div>
         <div className="menu-card-content">
           <span className="eyebrow">{m.category}</span><h2>{m.name}</h2><p className="menu-description">{m.description || 'Freshly prepared and ready to enjoy.'}</p>
-          <div className="menu-card-footer"><strong>{m.price ? money(m.price) : 'Included in package'}</strong><button aria-label={`Add ${m.name} to batch`} disabled={busy || !m.available || visit.session.status !== 'open' || (cart[m.id] || 0) >= 100} onClick={() => edit(m.id, 1)}>Add to Batch</button></div>
+          <div className="menu-card-footer"><strong>{m.price ? money(m.price) : 'Included in package'}</strong><button aria-label={`Add ${m.name} to batch`} disabled={busy || !m.available || visit.session.status !== 'open' || (cart[m.id] || 0) >= visit.session.regularPax + visit.session.discountedPax} onClick={() => edit(m.id, 1)}>Add to Batch</button></div>
           {cart[m.id] > 0 && <p role="status" className="menu-cart-count">In your cart: {cart[m.id]}</p>}
           {!m.available && <p className="error">Currently unavailable</p>}
         </div>
       </article>)}</div></>}
-      {stage === 'cart' && <section className="dining-card"><h2>Review your batch</h2>{!selected.length && <p>Your cart is empty. Choose items from the menu.</p>}{selected.map(m => <div className="bill-line" key={m.id}><span>{m.name} × {cart[m.id]}</span><span>{money(m.price * cart[m.id])}</span><button aria-label={`Decrease ${m.name} in cart`} disabled={busy} onClick={() => edit(m.id, -1)}>−</button><button aria-label={`Increase ${m.name} in cart`} disabled={busy || !m.available || visit.session.status !== 'open' || cart[m.id] >= 100} onClick={() => edit(m.id, 1)}>+</button><button className="secondary" aria-label={`Remove ${m.name} from cart`} disabled={busy} onClick={() => edit(m.id, -cart[m.id])}>Remove</button></div>)}<label>Special instructions<textarea maxLength={1000} value={notes} onChange={e => { requestId.current = newRequestId(); setNotes(e.target.value); }} disabled={busy} /></label><p>Additional charges for this batch: <strong>{money(cartTotal)}</strong></p><p>The package is already on your table’s bill.</p><button onClick={submit} disabled={busy || !selected.length || visit.session.status !== 'open'}>{busy ? 'Sending…' : 'Submit batch'}</button></section>}
+      {stage === 'cart' && <section className="dining-card"><h2>Review your batch</h2><p>Maximum {visit.session.regularPax + visit.session.discountedPax} of each item per batch for this table.</p>{!selected.length && <p>Your cart is empty. Choose items from the menu.</p>}{selected.map(m => <div className="bill-line" key={m.id}><span>{m.name} × {cart[m.id]}</span><span>{money(m.price * cart[m.id])}</span><button aria-label={`Decrease ${m.name} in cart`} disabled={busy} onClick={() => edit(m.id, -1)}>−</button><button aria-label={`Increase ${m.name} in cart`} disabled={busy || !m.available || visit.session.status !== 'open' || cart[m.id] >= visit.session.regularPax + visit.session.discountedPax} onClick={() => edit(m.id, 1)}>+</button><button className="secondary" aria-label={`Remove ${m.name} from cart`} disabled={busy} onClick={() => edit(m.id, -cart[m.id])}>Remove</button></div>)}<label>Special instructions<textarea maxLength={1000} value={notes} onChange={e => { requestId.current = newRequestId(); setNotes(e.target.value); }} disabled={busy} /></label><p>Additional charges for this batch: <strong>{money(cartTotal)}</strong></p><p>The package is already on your table’s bill.</p><button onClick={submit} disabled={busy || !selected.length || visit.session.status !== 'open'}>{busy ? 'Sending…' : 'Submit batch'}</button></section>}
       {stage === 'bill' && <><section className="dining-card"><h2>Your table’s bill</h2><p>Customer: <strong>{visit.session.customerName}</strong></p><div className="bill-line"><span>Regular guests × {visit.session.regularPax}</span><strong>{money(visit.session.regularPax * visit.session.regularGuestPrice)}</strong></div><div className="bill-line"><span>Discounted guests × {visit.session.discountedPax}</span><strong>{money(visit.session.discountedPax * visit.session.discountedGuestPrice)}</strong></div><div className="bill-line"><span>Additional items</span><strong>{money(visit.additionalTotal)}</strong></div>{visit.session.leftoverFee && <div className="bill-line"><span>Leftover fee: {visit.session.leftoverFee.description}</span><strong>{money(visit.leftoverFeeAmount)}</strong></div>}<div className="bill-line"><span>Additional discount: {visit.discountReason || 'None'}</span><strong>{money(visit.discountAmount)}</strong></div><div className="bill-line"><h2>Total</h2><h2>{money(visit.total)}</h2></div><button disabled={busy || visit.session.status !== 'open'} onClick={bill}>Finish ordering & request bill</button><p>Payment is confirmed by the cashier after every batch is served. Cancelled batches are excluded from your total.</p>{visit.session.status !== 'open' && visit.blockers.length > 0 && <p className="notice">Waiting for {visit.blockers.length} batch(es) to finish service.</p>}</section><h2>Shared order history</h2>{!visit.orders.length && <p>No orders yet.</p>}{visit.orders.map((o, i) => <article className="dining-card" key={o.id}><div className="bill-line"><h2>Batch {o.batchNumber || i + 1}</h2><strong>{statusLabel[o.status] || o.status}</strong></div><p>{new Date(o.timeOrdered).toLocaleTimeString()}</p>{o.items.map((item, j) => <p key={j}>{item.quantity} × {item.name} — {money(item.price * item.quantity)}</p>)}{o.customerNotes && <p>Instructions: {o.customerNotes}</p>}{o.cancellationReason && <p>Cancelled: {o.cancellationReason}</p>}<details><summary>Batch status history</summary>{o.history?.map((event, n) => <p key={n}>{statusLabel[event.status] || event.status} - {new Date(event.at).toLocaleTimeString()}</p>)}</details></article>)}</>}
     </>}
   </main>;

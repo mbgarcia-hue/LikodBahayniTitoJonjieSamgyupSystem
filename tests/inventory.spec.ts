@@ -79,7 +79,7 @@ test('owner: actual stock rejects blanks, retains failed edits and persists save
     await expect(page.getByRole('button', { name: 'Add product', exact: true })).toBeVisible();
 });
 
-test('cashier has Owner inventory controls and restocks are audited for both roles', async ({ page }) => {
+test('cashier inventory is read-only and shows only item photos, names, update times and status', async ({ page }) => {
   await page.goto('/cashier/login');
   await page.getByLabel('Username', { exact: true }).fill('cashier');
   await page.getByLabel('Password', { exact: true }).fill('Cashier@123');
@@ -87,46 +87,41 @@ test('cashier has Owner inventory controls and restocks are audited for both rol
   await expect(page).toHaveURL(/\/cashier\/billing$/);
   await page.goto('/cashier/inventory');
   await expect(page.getByRole('heading', { name: 'Inventory Overview', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Movement Log' })).toBeVisible();
-  await expect(page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Rice', exact: true }) }).getByRole('cell', { name: /kg/ })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Add product', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Edit', exact: true }).first()).toBeVisible();
-  await expect(page.getByRole('button', { name: /Hide .* from customer menu/ }).first()).toBeVisible();
-  await expect(page.getByText('Owner pricing controls', { exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Movement Log' })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add product', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Edit', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Restock', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: /Hide .* from customer menu/ })).toHaveCount(0);
   const row = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Rice', exact: true }) });
-  const before = (await (await page.request.get('/api/dining/state')).json()).inventory.find((item: { id: string }) => item.id === 'inv-7').currentStock;
-  await row.getByRole('button', { name: 'Restock', exact: true }).click();
-  await page.getByLabel('Restock quantity for Rice', { exact: true }).fill('2');
-  await page.getByLabel('Restock reason for Rice', { exact: true }).fill('Supplier delivery');
-  await row.getByRole('button', { name: 'Save restock', exact: true }).click();
-  await expect(page.getByText('Stock restocked and recorded in the movement log.', { exact: true })).toBeVisible();
-  const after = await (await page.request.get('/api/dining/state')).json();
-  const rice = after.inventory.find((item: { id: string }) => item.id === 'inv-7');
-  expect(rice.currentStock).toBe(before + 2);
-  expect(rice.stockLots[rice.stockLots.length - 1]).toMatchObject({ quantity: 2, remainingQuantity: 2, source: 'restock', reason: 'Supplier delivery', actorName: 'cashier' });
-  const movement = after.inventoryMovements.find((entry: { itemId: string; reason: string }) => entry.itemId === 'inv-7' && entry.reason === 'Supplier delivery');
-  expect(movement).toMatchObject({ type: 'restock', quantity: 2, beforeStock: before, afterStock: before + 2, actorName: 'cashier' });
-  await page.getByRole('button', { name: 'Movement Log' }).click();
-  const movementRow = page.getByRole('row').filter({ hasText: 'Supplier delivery' });
-  await expect(movementRow).toContainText('cashier');
-  await expect(movementRow).toContainText(String(before + 2));
-  await page.getByRole('button', { name: 'Inventory', exact: true }).click();
-  await row.getByText(/^FIFO lots/).click();
-  await expect(row.getByText(/Supplier delivery/)).toBeVisible();
-  await page.getByRole('button', { name: 'Add product', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'New product', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Close product form', exact: true }).click();
-  const photoInput = page.getByLabel('Food photo for Rice');
-  await photoInput.setInputFiles('public/menu/grill.webp');
-  await expect(page.getByText('Rice photo updated.', { exact: true })).toBeVisible();
-  await expect(page.locator('.food-image-picker-compact img[src*="/uploads/menu/"]')).toHaveCount(1);
+  await expect(row.getByRole('cell')).toHaveCount(4);
+  await expect(row.getByRole('cell', { name: /Last Updated/ })).toHaveCount(0);
+  await expect(row.getByRole('cell', { name: /High Stock|Low Stock|Out of Stock/ })).toBeVisible();
+  await expect(row.locator('input[type="file"]')).toHaveCount(0);
+
+  const before = await (await page.request.get('/api/dining/state')).json();
+  expect(Object.keys(before.inventory.find((item: { id: string }) => item.id === 'inv-7')).sort()).toEqual(['id', 'image', 'lastUpdated', 'name', 'status']);
+  expect(before.inventoryMovements).toEqual([]);
+  expect((await page.request.patch('/api/dining/inventory/inv-7', { data: { currentStock: 1 } })).status()).toBe(403);
+  expect((await page.request.post('/api/dining/inventory/inv-7/restock', { data: { quantity: 2, reason: 'Unauthorized' } })).status()).toBe(403);
+  expect((await page.request.put('/api/dining/inventory/inv-7/image', { data: { imageData: 'invalid' } })).status()).toBe(403);
+
   await page.goto('/owner/login');
   await page.getByLabel('Username', { exact: true }).fill('owner');
   await page.getByLabel('Password', { exact: true }).fill('Owner@123');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.goto('/owner/inventory');
+  const ownerBefore = (await (await page.request.get('/api/dining/state')).json()).inventory.find((item: { id: string }) => item.id === 'inv-7').currentStock;
+  const ownerRow = page.getByRole('row').filter({ has: page.getByRole('cell', { name: 'Rice', exact: true }) });
+  await ownerRow.getByRole('button', { name: 'Restock', exact: true }).click();
+  await page.getByLabel('Restock quantity for Rice', { exact: true }).fill('2');
+  await page.getByLabel('Restock reason for Rice', { exact: true }).fill('Owner supplier delivery');
+  await ownerRow.getByRole('button', { name: 'Save restock', exact: true }).click();
+  await expect(page.getByText('Stock restocked and recorded in the movement log.', { exact: true })).toBeVisible();
   await page.getByRole('button', { name: 'Movement Log' }).click();
-  await expect(page.getByRole('row').filter({ hasText: 'Supplier delivery' })).toContainText('cashier');
+  const movementRow = page.getByRole('row').filter({ hasText: 'Owner supplier delivery' });
+  await expect(movementRow).toContainText('owner');
+  const ownerAfter = (await (await page.request.get('/api/dining/state')).json()).inventory.find((item: { id: string }) => item.id === 'inv-7').currentStock;
+  expect(ownerAfter).toBe(ownerBefore + 2);
 });
 
 test('owner adds a product and controls its customer menu visibility without losing submitted history', async ({ browser }) => {

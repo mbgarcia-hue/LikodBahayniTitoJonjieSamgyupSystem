@@ -27,7 +27,9 @@ Use **Profile Settings** to save your details and change your password. Kitchen 
 
 Passwords are salted and hashed using scrypt. Staff session tokens are hashed in SQLite and expire after eight hours; logout revokes the server session. API restarts preserve valid sessions. No password or session token is included in staff identity responses.
 
-Cashiers manage tables, inventory and confirmed payments. Kitchen accounts can view active kitchen orders and advance preparation statuses; they cannot access payment records, visit codes or inventory controls. Owners have management API permissions. Page guards enforce the selected role; legacy admin pages require the owner account. Legacy admin login/register links open the owner login, without public account registration.
+Owners can open **Staff Accounts** in the owner dashboard to create cashier and kitchen logins. A staff member who forgets their password can submit a request from their cashier or kitchen login page. The owner reviews pending requests there, sets a temporary password, and gives it to the staff member in person; resetting it signs out their existing sessions. Recovery requests do not send email, and the response does not reveal whether a username exists. Forgotten owner passwords must be restored by an authorized system administrator because the owner account cannot approve its own reset.
+
+Cashiers manage tables and confirmed payments and can view inventory item photos, names, last-updated times and stock status. Only Owners can edit inventory, restock, archive, change customer-menu visibility or replace item photos. Kitchen accounts can view active kitchen orders and advance preparation statuses; they cannot access payment records, visit codes or inventory controls. Owners have management API permissions. Page guards enforce the selected role; legacy admin pages require the owner account. Legacy admin login/register links open the owner login, without public account registration.
 
 ## Seat a group and print the table QR codes
 

@@ -1,5 +1,4 @@
 import { useState } from 'react';
-import { Link, useLocation } from 'react-router';
 import { toast } from 'sonner';
 import { useRestaurant } from '../context/RestaurantContext';
 import { api } from '../lib/api';
@@ -7,7 +6,6 @@ import { statusLabel } from '../lib/orderStatus';
 
 export default function BatchReview() {
   const { orders, sessions, refresh } = useRestaurant();
-  const base = useLocation().pathname.startsWith('/admin') ? '/admin' : '/cashier';
   const [filter, setFilter] = useState('active'); const [busy, setBusy] = useState('');
   const [cancelling, setCancelling] = useState(''); const [reason, setReason] = useState('');
   const activeSessions = new Set(sessions.filter(s => s.status !== 'closed').map(s => s.id));
@@ -18,7 +16,7 @@ export default function BatchReview() {
     try { await api(path, body, method); await refresh(); setCancelling(''); setReason(''); toast.success('Batch updated'); }
     catch (e) { toast.error((e as Error).message); } finally { setBusy(''); }
   }
-  return <main className="dining"><header><p className="eyebrow">Cashier verification</p><h1>Order batches</h1><p>Approve the first batch for each table visit. Follow-up batches go directly to the kitchen and remain here as read-only records.</p><Link className="text-amber-300 underline" to={`${base}/billing`}>Table sessions & final billing</Link></header>
+  return <main className="dining"><header><p className="eyebrow">Cashier verification</p><h1>Order batches</h1><p>Approve the first batch for each table visit. Follow-up batches go directly to the kitchen and remain here as read-only records.</p></header>
     <nav className="dining-tabs">{[['submitted','Needs verification'],['active','All active batches'],['history','Full history']].map(([value,label]) => <button key={value} className={filter === value ? 'active' : 'secondary'} onClick={() => setFilter(value)}>{label}{value === 'submitted' ? ` (${orders.filter(needsReview).length})` : ''}</button>)}</nav>
     {!visible.length && <section className="dining-card">No batches in this view.</section>}
     <div className="dining-grid">{visible.map(o => <article className="dining-card batch-card" key={o.id} data-batch-id={o.id}><div className="bill-line"><h2>Table {o.tableNumber} · Batch {o.batchNumber}</h2><span className={`batch-status ${o.status}`}>{statusLabel[o.status] || o.status}</span></div><p>{new Date(o.timeOrdered).toLocaleString()}</p>

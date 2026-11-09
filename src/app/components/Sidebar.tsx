@@ -1,6 +1,8 @@
+import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { LucideIcon, LogOut } from 'lucide-react';
 import { useRestaurant } from '../context/RestaurantContext';
+import { api } from '../lib/api';
 import { ImageWithFallback } from '@/app/components/figma/ImageWithFallback';
 import restaurantLogo from '@/imports/685301822_878436815273126_809105010315524518_n-removebg-preview.png';
 
@@ -14,14 +16,26 @@ export interface SidebarNavItem {
 interface SidebarProps {
   navItems: SidebarNavItem[];
   logoutPath: string;
+  showGreeting?: boolean;
 }
 
-export default function Sidebar({ navItems, logoutPath }: SidebarProps) {
+export default function Sidebar({ navItems, logoutPath, showGreeting = false }: SidebarProps) {
   const location = useLocation();
   const navigate = useNavigate();
   const { getLowStockItems, getOutOfStockItems } = useRestaurant();
+  const [username, setUsername] = useState('');
+  const [usernameError, setUsernameError] = useState('');
 
   const lowStockCount = getLowStockItems().length + getOutOfStockItems().length;
+
+  useEffect(() => {
+    if (!showGreeting) return;
+    let active = true;
+    api('/staff/me')
+      .then((data) => { if (active) setUsername(data.user.username); })
+      .catch((error: Error) => { if (active) setUsernameError(error.message); });
+    return () => { active = false; };
+  }, [showGreeting]);
 
   return (
     <div className="flex h-full w-64 flex-col bg-[#1A1210] border-r border-amber-600/30">
@@ -37,6 +51,11 @@ export default function Sidebar({ navItems, logoutPath }: SidebarProps) {
           Likod Bahay ni Tito Jonjie
         </h1>
         <p className="text-xs text-amber-600/80 mt-1 text-center tracking-widest uppercase">Samgyupsal</p>
+        {showGreeting && (
+          <p className="mt-3 text-center text-sm text-amber-200/80" role="status">
+            {username ? `Hello, ${username}` : usernameError ? 'Unable to load account username' : 'Loading account…'}
+          </p>
+        )}
       </div>
 
       <nav className="flex-1 space-y-1 p-4">

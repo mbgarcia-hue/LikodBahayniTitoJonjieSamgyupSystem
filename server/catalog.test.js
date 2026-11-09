@@ -24,7 +24,7 @@ test('owner-managed products, stock links and customer menu visibility', async t
   const payload = { name: 'Calamansi Juice', category: 'Drinks', price: 49.5, description: 'Fresh juice', unit: 'liters', currentStock: 3.5, lowStockThreshold: 1, stockPerOrder: 0.25, hiddenFromMenu: false };
   let cashier, kitchen, owner, product, batch;
   const phones = [];
-  const state = async () => (await call('/dining/state', undefined, cashier)).data;
+  const state = async () => (await call('/dining/state', undefined, owner)).data;
   const patch = (id, body, cookie = owner) => call(`/dining/inventory/${id}`, body, cookie, '', 'PATCH');
   const menuFor = async phone => (await call(`/dining/visits/${phone.id}`, undefined, '', phone.token)).data;
   const submit = (items, requestId) => call(`/dining/visits/${phones[0].id}/orders`, { items, requestId }, '', phones[0].token);
@@ -32,12 +32,12 @@ test('owner-managed products, stock links and customer menu visibility', async t
     cashier = (await call('/staff/login', { username: 'cashier', password: 'CatalogTest@123', role: 'cashier' })).cookie;
     owner = (await call('/staff/login', { username: 'owner', password: 'CatalogTest@123', role: 'owner' })).cookie;
     kitchen = (await call('/staff/login', { username: 'kitchen', password: 'CatalogTest@123', role: 'kitchen' })).cookie;
-    await t.test('cashiers and owners share inventory controls while pricing remains owner-only', async () => {
+    await t.test('only owners manage inventory while cashiers can view it', async () => {
       assert.equal((await call('/dining/inventory', payload)).status, 401);
       assert.equal((await call('/dining/inventory', payload, kitchen)).status, 403);
       assert.equal((await patch('inv-13', { hiddenFromMenu: true }, kitchen)).status, 403);
-      assert.equal((await patch('inv-13', { hiddenFromMenu: true }, cashier)).status, 200);
-      assert.equal((await patch('inv-13', { hiddenFromMenu: false }, cashier)).status, 200);
+      assert.equal((await patch('inv-13', { hiddenFromMenu: true }, cashier)).status, 403);
+      assert.equal((await patch('inv-13', { hiddenFromMenu: false }, cashier)).status, 403);
       assert.equal((await patch('inv-13', { hiddenFromMenu: true }, '')).status, 401);
       const { default: sharp } = await import('sharp');
       const photo = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#c76b32' } }).png().toBuffer();
@@ -47,16 +47,16 @@ test('owner-managed products, stock links and customer menu visibility', async t
       assert.equal(created.data.inventory.hiddenFromMenu, true);
       assert.match(created.data.menu.image, /^\/uploads\/menu\/[0-9a-f-]+\.webp$/);
       const cashierProduct = await call('/dining/inventory', { ...payload, name: 'Cashier added product', currentStock: 0, imageData }, cashier);
-      assert.equal(cashierProduct.status, 201);
-      assert.equal((await patch(cashierProduct.data.inventory.id, { archived: true }, cashier)).status, 200);
-      const existing = await patch('inv-7', { imageData }, cashier);
+      assert.equal(cashierProduct.status, 403);
+      assert.equal((await patch('inv-7', { archived: true }, cashier)).status, 403);
+      const existing = await patch('inv-7', { imageData }, owner);
       assert.equal(existing.status, 400);
-      const uploaded = await call('/dining/inventory/inv-7/image', { imageData }, cashier, '', 'PUT');
+      const uploaded = await call('/dining/inventory/inv-7/image', { imageData }, owner, '', 'PUT');
       assert.equal(uploaded.status, 200);
       assert.match(uploaded.data.image, /^\/uploads\/menu\/[0-9a-f-]+\.webp$/);
       const stateAfterUpload = await state();
       assert.equal(stateAfterUpload.inventory.find(i => i.id === 'inv-7').image, uploaded.data.image);
-      assert.equal((await patch('inv-7', { currentStock: 20 }, cashier)).status, 200);
+      assert.equal((await patch('inv-7', { currentStock: 20 }, cashier)).status, 403);
       assert.equal((await call('/dining/inventory/inv-7/image', { imageData: 'data:image/png;base64,not-an-image' }, owner, '', 'PUT')).status, 400);
       assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, cashier, '', 'PATCH')).status, 403);
       assert.equal((await call('/dining/menu/add-1/pricing', { price: 40, priceMinimum: 30, priceMaximum: 50 }, cashier, '', 'PATCH')).status, 403);
@@ -66,18 +66,19 @@ test('owner-managed products, stock links and customer menu visibility', async t
       const before = (await state()).inventory.find(item => item.id === itemId).currentStock;
       assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: 'Delivery' })).status, 401);
       assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: 'Delivery' }, kitchen)).status, 403);
-      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 0, reason: 'Delivery' }, cashier)).status, 400);
-      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: ' ' }, cashier)).status, 400);
-      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: 'Delivery', extra: true }, cashier)).status, 400);
-      const result = await call(`/dining/inventory/${itemId}/restock`, { quantity: 2.5, reason: 'Supplier delivery' }, cashier);
+      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: 'Delivery' }, cashier)).status, 403);
+      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 0, reason: 'Delivery' }, owner)).status, 400);
+      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: ' ' }, owner)).status, 400);
+      assert.equal((await call(`/dining/inventory/${itemId}/restock`, { quantity: 2, reason: 'Delivery', extra: true }, owner)).status, 400);
+      const result = await call(`/dining/inventory/${itemId}/restock`, { quantity: 2.5, reason: 'Supplier delivery' }, owner);
       assert.equal(result.status, 200);
       assert.equal(result.data.beforeStock, before);
       assert.equal(result.data.afterStock, before + 2.5);
-      assert.equal(result.data.actorName, 'cashier');
+      assert.equal(result.data.actorName, 'owner');
       assert.equal(result.data.reason, 'Supplier delivery');
       const saved = await state();
       assert.equal(saved.inventory.find(item => item.id === itemId).currentStock, before + 2.5);
-      assert.ok(saved.inventoryMovements.some(movement => movement.id === result.data.id && movement.actorName === 'cashier'));
+      assert.ok(saved.inventoryMovements.some(movement => movement.id === result.data.id && movement.actorName === 'owner'));
       assert.ok((await call('/dining/state', undefined, owner)).data.inventoryMovements.some(movement => movement.id === result.data.id));
     });
     await t.test('invalid and duplicate products leave database state unchanged', async () => {
@@ -162,8 +163,8 @@ test('owner-managed products, stock links and customer menu visibility', async t
       assert.equal((await submit([{ menuItemId: product.menu.id, quantity: 1 }], 'out-of-stock')).status, 409);
       assert.equal((await call('/dining/inventory', { ...payload, name: ' calAMAnsi   Juice ' }, owner)).status, 409);
       const fractional = await call('/dining/inventory', { ...payload, name: 'Cent price product', price: 0.1, stockPerOrder: 1 }, owner);
-      const centsOrder = await submit([{ menuItemId: fractional.data.menu.id, quantity: 3 }], 'cents-price');
-      assert.equal(centsOrder.status, 200); assert.equal(centsOrder.data.totalAmount, 0.3);
+      const centsOrder = await submit([{ menuItemId: fractional.data.menu.id, quantity: 2 }], 'cents-price');
+      assert.equal(centsOrder.status, 200); assert.equal(centsOrder.data.totalAmount, 0.2);
     });
     await t.test('only owners change package rates and menu item prices stay inside saved bounds', async () => {
       assert.equal((await call('/dining/pricing', { regularGuestPrice: 250, discountedGuestPrice: 200 }, owner, '', 'PATCH')).status, 200);

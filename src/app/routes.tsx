@@ -16,6 +16,7 @@ import CashierProfile from "./pages/cashier/Profile";
 import OwnerDashboard from "./pages/owner/Dashboard";
 import OwnerSales from "./pages/owner/Sales";
 import OwnerProfile from "./pages/owner/Profile";
+import OwnerStaffAccounts from "./pages/owner/StaffAccounts";
 
 import CustomerPaxInput from "./pages/customer/PaxInput";
 import CustomerMenu from "./pages/customer/Menu";
@@ -45,7 +46,7 @@ export const router = createBrowserRouter([
       { index: true, Component: CashierOrders },
       { path: "orders", Component: CashierOrders },
       { path: "billing", Component: StaffDining },
-      { path: "inventory", element: <Inventory canManage /> },
+      { path: "inventory", Component: Inventory },
       { path: "qr-tables", element: <Navigate to="/cashier/billing" replace /> },
       { path: "profile", Component: CashierProfile },
     ],
@@ -60,6 +61,7 @@ export const router = createBrowserRouter([
       { index: true, Component: OwnerDashboard },
       { path: "inventory", element: <Inventory canManage canManagePricing /> },
       { path: "sales", Component: OwnerSales },
+      { path: "staff", Component: OwnerStaffAccounts },
       { path: "profile", Component: OwnerProfile },
     ],
   },

@@ -34,12 +34,13 @@ test('one visit approval gates all phones and automatically routes later batches
     process.stdout.write(db.prepare('SELECT body FROM dining_state WHERE id=1').get().body);
     db.close();
   `], { encoding: 'utf8', env: { ...process.env } }));
-  let cashier, kitchen, visit, a, b, initial, queued, followUp;
-  const state = async () => (await call('/dining/state', undefined, cashier)).data;
+  let cashier, kitchen, owner, visit, a, b, initial, queued, followUp;
+  const state = async () => (await call('/dining/state', undefined, owner)).data;
   const submit = (phone, requestId, menuItemId = 'add-1', quantity = 1) => call(`/dining/visits/${phone.id}/orders`, { requestId, items: [{ menuItemId, quantity }], approvalType: 'automatic', approvedBy: 'forged', initialBatchApproved: true }, '', phone.token);
   try {
     cashier = (await call('/staff/login', { username: 'cashier', password: 'InitialTest@123', role: 'cashier' })).cookie;
     kitchen = (await call('/staff/login', { username: 'kitchen', password: 'InitialTest@123', role: 'kitchen' })).cookie;
+    owner = (await call('/staff/login', { username: 'owner', password: 'Owner@123', role: 'owner' })).cookie;
     visit = (await call('/dining/open', { tableNumber: 1, customerName: 'Approval Guest', regularPax: 2, discountedPax: 0 }, cashier)).data;
     a = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'Approval Guest' })).data;
     b = (await call('/dining/join', { tableNumber: 1, code: visit.code, customerName: 'Approval Guest' })).data;
